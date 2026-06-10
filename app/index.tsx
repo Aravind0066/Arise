@@ -49,7 +49,7 @@ const styles = StyleSheet.create({
   },
   greeting: {
     color: '#666666',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '500',
   },
   title: {
