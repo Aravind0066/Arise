@@ -1,10 +1,15 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-const connectDB = require("./config/db");
-const app = express();
 
-const User = require("./models/User");
+const connectDB = require("./config/db");
+
+const userRoutes = require("./routes/userRoutes");
+const questRoutes = require("./routes/questRoutes");
+const completedQuestRoutes = require("./routes/completedQuestRoutes");
+
+
+const app = express();
 
 app.use(cors());
 app.use(express.json());
@@ -12,27 +17,16 @@ app.use(express.json());
 connectDB();
 
 app.get("/", (req, res) => {
-  res.json({
-    status: "success",
-    message: "Arise Backend Running"
-  });
+    res.json({
+        status: "success",
+        message: "Arise Backend Running",
+    });
 });
+
+app.use("/api/users", userRoutes);
+app.use("/api/quests", questRoutes);
+app.use("/api/completedquests", completedQuestRoutes);
 
 app.listen(process.env.PORT, () => {
-  console.log(`Server Running On Port ${process.env.PORT}`);
-});
-
-app.get("/test-user", async (req, res) => {
-  try {
-    const user = await User.create({
-      name: "Arav",
-      email: "arav@gmail.com",
-    });
-
-    res.json({user, message: "Yup, rest assured the User is working as intended...!!!"});
-  } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
-  }
+    console.log(`Server Running On Port ${process.env.PORT}`);
 });
