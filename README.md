@@ -1,5 +1,51 @@
 # Welcome to your Expo app 👋
 
+## Arise V1
+
+Arise is a deadline-based quest app. The Express backend calculates quest status
+(`active`, `expired`, or `completed`), rejects completion after a deadline, prevents
+duplicate rewards, and can generate three validated quests through Gemini.
+
+### Run locally
+
+```bash
+npm install
+npm run web
+
+cd backend
+npm install
+cp .env.example .env
+npm start
+```
+
+Set `EXPO_PUBLIC_API_URL` to the backend API base URL (for example,
+`http://localhost:5000/api`). For a physical device, use the computer's LAN IP
+instead of `localhost`.
+
+### API workflow
+
+- `POST /api/users` creates a user.
+- `POST /api/quests` creates a quest with `deadline`.
+- `GET /api/quests?userId=<id>` returns quests with calculated status, including
+  completed status for that user.
+- `POST /api/quests/generate` sends a goal to Gemini, validates exactly three
+  recommendations, assigns deadlines, and saves them.
+- `POST /api/completedquests/complete` completes a quest and awards XP once.
+- `GET /api/completedquests/:userId` returns completion history.
+
+### AWS deployment
+
+The backend includes [`backend/Dockerfile`](./backend/Dockerfile) and
+[`backend/apprunner.yaml`](./backend/apprunner.yaml). The fastest deployment is
+AWS App Runner from the repository, using the backend directory as the source.
+Configure `PORT=5000`, `MONGO_URI`, `GEMINI_API_KEY`, and `GEMINI_MODEL` as
+App Runner environment variables or AWS Secrets Manager values. Set the health
+check path to `/` and allow inbound MongoDB Atlas access from the App Runner
+service. Do not commit `.env` or API keys.
+
+The Gemini key belongs only in the backend environment. Never put it in Expo
+code, `EXPO_PUBLIC_*` variables, Git, or an AWS client bundle.
+
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
 ## Get started

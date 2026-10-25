@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const mongoose = require("mongoose");
 
 const createUser = async (req, res) => {
   try {
@@ -6,8 +7,9 @@ const createUser = async (req, res) => {
 
     res.status(201).json(user);
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    res.status(error.code === 11000 ? 409 : 400).json({
+      success: false,
+      message: error.code === 11000 ? "Email already exists" : error.message,
     });
   }
 };
@@ -26,6 +28,9 @@ const getUsers = async (req, res) => {
 
 const getUserById = async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID" });
+    }
     const user = await User.findById(req.params.id);
 
     if (!user) {

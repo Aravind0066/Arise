@@ -7,10 +7,12 @@ const {
     updateQuest,
     deleteQuest,
 } = require("../controllers/questController");
+const { generateRecommendations } = require("../controllers/recommendationController");
 
 const router = express.Router();
 
 router.post("/", createQuest);
+router.post("/generate", generateRecommendations);
 
 router.get("/", getQuests);
 

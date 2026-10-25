@@ -23,4 +23,6 @@ const completedQuestSchema = new mongoose.Schema(
     }
 )
 
+completedQuestSchema.index({ userId: 1, questId: 1 }, { unique: true });
+
 module.exports = mongoose.model("CompletedQuest", completedQuestSchema);

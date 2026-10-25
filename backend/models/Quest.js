@@ -20,6 +20,23 @@ const questSchema = new mongoose.Schema(
     xpReward: {
       type: Number,
       required: true,
+      min: 1,
+      max: 1000,
+    },
+
+    deadline: {
+      type: Date,
+      required: true,
+      validate: {
+        validator: (value) => !Number.isNaN(value.getTime()),
+        message: "Deadline must be a valid date",
+      },
+    },
+
+    generatedBy: {
+      type: String,
+      enum: ["user", "ai"],
+      default: "user",
     },
 
     isActive: {
