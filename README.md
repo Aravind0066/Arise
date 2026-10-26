@@ -1,96 +1,51 @@
-# Welcome to your Expo app 👋
+# HUNTEROS // SYSTEM (ARISE)
 
-## Arise V1
+> **"Level Up Yourself. A real-life RPG where YOU are the character."**  
+> Fitness, study, discipline, nutrition, mental health, and screen time — all feeding one 5-axis progression system.
 
-Arise is a deadline-based quest app. The Express backend calculates quest status
-(`active`, `expired`, or `completed`), rejects completion after a deadline, prevents
-duplicate rewards, and can generate three validated quests through Gemini.
+---
 
-### Run locally
+## ⚡ Key Highlights
 
+- **Solo Leveling HUD & Dark Aesthetic**: `#040b14` dark navy canvas, neon cyan (`#00f3ff`) and purple (`#9d4edd`) accents, high-contrast monospace typography.
+- **Dedicated Guided Workout Engine**:
+  - Full Workout Preparation screen with exercise roster, duration, difficulty, equipment, and stat targets.
+  - Active Workout Screen with movement sequence, countdown/rep targets, pause/resume, skip, and rest transitions.
+  - Animated SVG exercise illustrations for push-ups, squats, planks, lunges, mountain climbers, burpees, crunches, and rest.
+  - Safe-exit confirmation modal prevents accidental dismissal.
+  - Triumphant completion screen awarding XP and stats exactly once.
+- **5-Axis Pentagon Stat Radar**: Strength, Knowledge, Discipline, Health, and Mindfulness updating live via SVG.
+- **Character Dossier & Onboarding**: Baseline hunter awakening, rank progression (E-Rank through National Level), title designation, and biometric tracking.
+- **Activity Modules & Tools**:
+  - ⚔️ **Workout Module**: Guided dungeon raids + custom lifting set logger.
+  - ⏱️ **Study Pomodoro**: 25m, 50m, 90m focus countdown timer with topic verification and Knowledge XP accreditation.
+  - 📝 **Daily 3-Prompt Journal**: Wins, friction points, tomorrow's plan, mood/energy audit -> Mindfulness XP.
+  - 🛡️ **Discipline Matrix**: Screen unlocks, reels reduction tracker, and discipline victory checkpoints.
+- **Local-First Architecture**: AsyncStorage serves as the source of truth for personal progress, ensuring 100% offline autonomy and instant responsiveness. Optional cloud gateway handles remote AI directive generation.
+
+---
+
+## 🚀 Quick Start (One Command)
+
+### Run Both Frontend & Backend Concurrently:
 ```bash
-npm install
-npm run web
-
-cd backend
-npm install
-cp .env.example .env
-npm start
+npm run dev
 ```
+*Starts the Express backend on `http://localhost:5000` and Expo Web on `http://localhost:8081`.*
 
-Set `EXPO_PUBLIC_API_URL` to the backend API base URL (for example,
-`http://localhost:5000/api`). For a physical device, use the computer's LAN IP
-instead of `localhost`.
+---
 
-### API workflow
+## 🧪 Testing & Verification
 
-- `POST /api/users` creates a user.
-- `POST /api/quests` creates a quest with `deadline`.
-- `GET /api/quests?userId=<id>` returns quests with calculated status, including
-  completed status for that user.
-- `POST /api/quests/generate` sends a goal to Gemini, validates exactly three
-  recommendations, assigns deadlines, and saves them.
-- `POST /api/completedquests/complete` completes a quest and awards XP once.
-- `GET /api/completedquests/:userId` returns completion history.
-
-### AWS deployment
-
-The backend includes [`backend/Dockerfile`](./backend/Dockerfile) and
-[`backend/apprunner.yaml`](./backend/apprunner.yaml). The fastest deployment is
-AWS App Runner from the repository, using the backend directory as the source.
-Configure `PORT=5000`, `MONGO_URI`, `GEMINI_API_KEY`, and `GEMINI_MODEL` as
-App Runner environment variables or AWS Secrets Manager values. Set the health
-check path to `/` and allow inbound MongoDB Atlas access from the App Runner
-service. Do not commit `.env` or API keys.
-
-The Gemini key belongs only in the backend environment. Never put it in Expo
-code, `EXPO_PUBLIC_*` variables, Git, or an AWS client bundle.
-
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
-
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- **Run all automated tests (Engine & Backend)**:
+  ```bash
+  npm test
+  ```
+- **Type check**:
+  ```bash
+  npx tsc --noEmit
+  ```
+- **Expo Web Production Export**:
+  ```bash
+  npx expo export --platform web
+  ```

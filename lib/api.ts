@@ -1,3 +1,5 @@
+import { HunterQuest, StatType } from './hunterTypes';
+
 export type Quest = {
   _id: string;
   title: string;
@@ -5,7 +7,7 @@ export type Quest = {
   category: string;
   xpReward: number;
   deadline: string;
-  generatedBy: 'user' | 'ai';
+  generatedBy: 'user' | 'ai' | 'system';
   status: 'active' | 'expired' | 'completed';
 };
 
@@ -24,18 +26,60 @@ export type CompletedQuest = {
   questId: Quest;
 };
 
+export interface CloudHealthResponse {
+  status: string;
+  uptimeSeconds: number;
+  timestamp: string;
+  cloudService: string;
+  database: string;
+  aiProvider: string;
+  latencyMs: number;
+  isOnline: boolean;
+}
+
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:5000/api';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.message ?? 'Request failed');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.message ?? 'Request failed');
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return payload;
+}
+
+export async function checkCloudHealth(): Promise<CloudHealthResponse> {
+  const start = Date.now();
+  try {
+    const res = await request<Omit<CloudHealthResponse, 'latencyMs' | 'isOnline'>>('/health');
+    return {
+      ...res,
+      latencyMs: Date.now() - start,
+      isOnline: true,
+    };
+  } catch {
+    return {
+      status: 'offline',
+      uptimeSeconds: 0,
+      timestamp: new Date().toISOString(),
+      cloudService: 'HunterOS Core (Standby / Local First)',
+      database: 'Device Local Storage (AsyncStorage)',
+      aiProvider: 'Embedded HunterOS System Engine',
+      latencyMs: 0,
+      isOnline: false,
+    };
+  }
 }
 
 export function getQuests() {
@@ -57,16 +101,86 @@ export function getHistory(userId: string) {
   return request<{ success: boolean; data: CompletedQuest[] }>(`/completedquests/${userId}`);
 }
 
-export function generateQuests(input: {
+export async function generateQuests(input: {
   goal: string;
   category: string;
   availableMinutes: number;
   difficulty: string;
-}) {
-  return request<{ success: boolean; data: Quest[] }>('/quests/generate', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+}): Promise<{ success: boolean; data: HunterQuest[]; source: string }> {
+  try {
+    const result = await request<{ success: boolean; data: any[]; source?: string }>('/quests/generate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+
+    const mapped: HunterQuest[] = result.data.map((q, idx) => {
+      let targetStat: StatType = 'knowledge';
+      const cat = (input.category || q.category || '').toLowerCase();
+      if (cat.includes('fitness') || cat.includes('strength')) targetStat = 'strength';
+      else if (cat.includes('health')) targetStat = 'health';
+      else if (cat.includes('discipline')) targetStat = 'discipline';
+      else if (cat.includes('mind')) targetStat = 'mindfulness';
+
+      return {
+        _id: q._id || `ai_quest_${Date.now()}_${idx}`,
+        title: q.title,
+        description: q.description,
+        category: (input.category as any) || 'Study',
+        targetStat,
+        statBonus: Math.max(2, Math.min(6, Math.round((q.xpReward || 50) / 18))),
+        xpReward: q.xpReward || 60,
+        deadline: q.deadline || new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        generatedBy: 'ai',
+        status: 'active',
+      };
+    });
+
+    return { success: true, data: mapped, source: result.source || 'hunter-cloud-api' };
+  } catch (error) {
+    // Graceful offline fallback
+    console.warn('Backend unavailable, generating via HunterOS local engine:', error);
+    const now = Date.now();
+    const fallbackQuests: HunterQuest[] = [
+      {
+        _id: `fallback_${now}_1`,
+        title: `SHADOW RECON // ${input.goal.toUpperCase()}`,
+        description: `Execute an intense, uninterrupted session addressing "${input.goal}".`,
+        category: (input.category as any) || 'Study',
+        targetStat: 'knowledge',
+        statBonus: 4,
+        xpReward: 75,
+        deadline: new Date(now + 3 * 3600 * 1000).toISOString(),
+        generatedBy: 'ai',
+        status: 'active',
+      },
+      {
+        _id: `fallback_${now}_2`,
+        title: `SYNAPSE RECALL // ACTIVE DRILLS`,
+        description: `Verify and retain concepts mastered from "${input.goal}".`,
+        category: (input.category as any) || 'Study',
+        targetStat: 'discipline',
+        statBonus: 3,
+        xpReward: 50,
+        deadline: new Date(now + 5 * 3600 * 1000).toISOString(),
+        generatedBy: 'ai',
+        status: 'active',
+      },
+      {
+        _id: `fallback_${now}_3`,
+        title: `RECOVERY MATRIX // SYSTEM AUDIT`,
+        description: `Synthesize takeaways and rehydrate after completing "${input.goal}".`,
+        category: (input.category as any) || 'Study',
+        targetStat: 'health',
+        statBonus: 2,
+        xpReward: 35,
+        deadline: new Date(now + 8 * 3600 * 1000).toISOString(),
+        generatedBy: 'ai',
+        status: 'active',
+      },
+    ];
+
+    return { success: true, data: fallbackQuests, source: 'hunteros-embedded-engine' };
+  }
 }
 
 export function completeQuest(userId: string, questId: string) {
