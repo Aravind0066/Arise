@@ -1,4 +1,7 @@
 import { HunterQuest, StatType } from './hunterTypes';
+import type { ApiResponse, AiGenerateInput, AiGenerateResponse, WeaknessInput, WeaknessRecommendation, WeaknessResponse, NutritionInput, NutritionRecommendation, NutritionResponse, ChatInput, ChatResponse, ChatApiResponse } from './hunterTypes';
+
+
 
 export type Quest = {
   _id: string;
@@ -43,6 +46,28 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);
 
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.message ?? 'Request failed');
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Same as `request` but allows a custom timeout (ms).
+ */
+async function requestWithTimeout<T>(path: string, options?: RequestInit, timeoutMs: number = 6000): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${API_URL}${path}`, {
       ...options,
@@ -187,5 +212,47 @@ export function completeQuest(userId: string, questId: string) {
   return request<{ success: boolean; xp: number }>('/completedquests/complete', {
     method: 'POST',
     body: JSON.stringify({ userId, questId }),
+  });
+}
+
+/**
+ * Call Gemini AI generate endpoint.
+ * @param input Prompt to send.
+ */
+export async function generateAI(input: { prompt: string }) {
+  if (!input.prompt || input.prompt.trim().length === 0) {
+    throw new Error('Prompt must be a non‑empty string');
+  }
+  return requestWithTimeout<ApiResponse<{ reply: string }>>('/ai/generate', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }, 10000);
+
+}
+
+/** Weakness‑based quest recommendations */
+export async function getWeaknessRecommendations(payload: WeaknessInput) {
+  return request<ApiResponse<WeaknessRecommendation[]>>('/weakness', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Nutrition recommendations */
+export async function getNutritionRecommendations(payload: NutritionInput) {
+  return request<ApiResponse<NutritionRecommendation[]>>('/nutrition', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Chat with AI */
+export async function chatWithAI(payload: ChatInput) {
+  if (payload.message.length > 2000) {
+    throw new Error('Message exceeds maximum length of 2000 characters');
+  }
+  return request<ApiResponse<ChatResponse>>('/chat', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }

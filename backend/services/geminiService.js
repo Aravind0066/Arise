@@ -5,6 +5,10 @@ const ajv = new Ajv();
 // Default timeout for Gemini requests (ms)
 const DEFAULT_TIMEOUT_MS = 10000;
 
+// Internal utilities for testing/mockability
+const _internal = { getClient, DEFAULT_TIMEOUT_MS };
+
+
 /**
  * Retrieve a Gemini client using the API key from environment variables.
  * Returns null if the key is missing.
@@ -72,6 +76,5 @@ async function generateResponse(prompt, options = {}) {
 
 module.exports = {
   generateResponse,
-  // Exported for testing purposes only.
-  _internal: { getClient, DEFAULT_TIMEOUT_MS },
+  _internal,
 };

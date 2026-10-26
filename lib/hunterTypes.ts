@@ -1,5 +1,92 @@
 export type StatType = 'strength' | 'knowledge' | 'discipline' | 'health' | 'mindfulness';
 
+// --- AI related types (added for frontend API wrapper) ---
+/**
+ * Generic API response wrapper used by backend endpoints.
+ */
+export interface ApiResponse<T = any> {
+  /** Indicates if the request succeeded */
+  success: boolean;
+  /** Payload data when success is true */
+  data?: T;
+  /** Optional fallback flag when the backend used a deterministic fallback */
+  fallback?: boolean;
+  /** Error message when success is false */
+  error?: string;
+}
+
+/** Input shape for AI generate endpoint */
+export interface AiGenerateInput {
+  /** Prompt string sent to the AI */
+  prompt: string;
+}
+
+/** Response shape for AI generate */
+export type AiGenerateResponse = ApiResponse<{ reply: string }>;
+
+/** Input for weakness recommendation endpoint */
+export interface WeaknessInput {
+  goals: string[];
+  stats: Record<string, number>;
+  completedQuests: string[];
+  skippedQuests?: string[];
+  difficulty?: string;
+}
+
+/** Single weakness recommendation */
+export interface WeaknessRecommendation {
+  title: string;
+  description: string;
+  category: string;
+  estimatedDuration: number; // minutes
+  difficulty: string;
+  deadline: string; // ISO date
+  suggestedReward: number; // XP
+}
+
+export type WeaknessResponse = ApiResponse<WeaknessRecommendation[]>;
+
+/** Input for nutrition recommendation */
+export interface NutritionInput {
+  fitnessGoal?: string;
+  dietaryPreferences?: string[];
+  allergies?: string[];
+  budget?: number; // optional currency units
+  availableIngredients?: string[];
+  mealType?: string;
+  preparationTime?: number; // minutes
+}
+
+/** Single nutrition recommendation */
+export interface NutritionRecommendation {
+  name: string;
+  ingredients: string[];
+  portions: string;
+  steps: string[];
+  nutrition?: {
+    calories?: number;
+    protein?: number; // grams
+    note?: string;
+  };
+  note?: string;
+}
+
+export type NutritionResponse = ApiResponse<NutritionRecommendation[]>;
+
+/** Input for chat endpoint */
+export interface ChatInput {
+  message: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}
+
+/** Chat response */
+export interface ChatResponse {
+  reply: string;
+  fallback?: boolean;
+}
+
+export type ChatApiResponse = ApiResponse<ChatResponse>;
+
 export interface HunterStats {
   strength: number;     // 0 - 100
   knowledge: number;    // 0 - 100

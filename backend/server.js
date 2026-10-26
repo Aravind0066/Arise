@@ -8,7 +8,11 @@ const connectDB = require("./config/db");
 const userRoutes = require("./routes/userRoutes");
 const questRoutes = require("./routes/questRoutes");
 const completedQuestRoutes = require("./routes/completedQuestRoutes");
+const aiRoutes = require('./routes/aiRoutes');
+const weaknessRoutes = require('./routes/weaknessRecommendationRoutes');
 const recommendationRoutes = require("./routes/recommendationRoutes");
+const nutritionRoutes = require('./routes/nutritionRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 
@@ -50,6 +54,9 @@ app.use("/api/users", userRoutes);
 app.use("/api/quests", questRoutes);
 app.use("/api/completedquests", completedQuestRoutes);
 app.use("/api/recommendations", recommendationRoutes);
+app.use("/api/nutrition", nutritionRoutes);
+app.use("/api/weakness", weaknessRoutes);
+app.use("/api/ai", aiRoutes);
 
 const port = process.env.PORT || 5000;
 app.listen(port, () => {
