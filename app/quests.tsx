@@ -12,14 +12,17 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation } from '../components/BottomNavigation';
-import { generateQuests } from '../lib/api';
+import { generateQuests, getWeaknessRecommendations } from '../lib/api';
 import {
   addHunterQuests,
   completeHunterQuest,
+  getHunterHistory,
+  getHunterProfile,
   getHunterQuests,
+  getHunterStats,
   recordStudyCompletion,
 } from '../lib/hunterStorage';
-import { HunterQuest, StatType } from '../lib/hunterTypes';
+import { HunterQuest, StatType, WeaknessRecommendation } from '../lib/hunterTypes';
 
 const CATEGORIES = ['ALL', 'FITNESS', 'STUDY', 'DISCIPLINE', 'HEALTH', 'MINDFULNESS'] as const;
 
@@ -47,6 +50,13 @@ export default function QuestsScreen() {
   const [selectedQuestForAction, setSelectedQuestForAction] = useState<HunterQuest | null>(null);
   const [verificationNote, setVerificationNote] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
+
+  // Weakness recommendations state
+  const [recommendations, setRecommendations] = useState<WeaknessRecommendation[]>([]);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState('');
+  const [recFallback, setRecFallback] = useState(false);
+  const [skippedRecs, setSkippedRecs] = useState<string[]>([]);
 
   const loadData = useCallback(async () => {
     const q = await getHunterQuests();
@@ -110,6 +120,104 @@ export default function QuestsScreen() {
     } finally {
       setIsVerifying(false);
     }
+  };
+
+  const fetchRecommendations = async () => {
+    setRecLoading(true);
+    setRecError('');
+    setRecFallback(false);
+    try {
+      const profile = await getHunterProfile();
+      const stats = await getHunterStats();
+      const history = await getHunterHistory();
+
+      const goals: string[] = [];
+      if (profile?.primaryGoal) goals.push(profile.primaryGoal);
+      if (profile?.studyFocus) goals.push(profile.studyFocus);
+      if (goals.length === 0) goals.push('General self-improvement');
+
+      const statsRecord: Record<string, number> = {
+        strength: stats.strength,
+        knowledge: stats.knowledge,
+        discipline: stats.discipline,
+        health: stats.health,
+        mindfulness: stats.mindfulness,
+      };
+
+      const completedTitles = history.map((h) => h.title);
+
+      const payload = {
+        goals,
+        stats: statsRecord,
+        completedQuests: completedTitles,
+        skippedQuests: skippedRecs,
+        difficulty: profile?.fitnessLevel ?? 'Intermediate',
+      };
+
+      const res = await getWeaknessRecommendations(payload);
+
+      if (!res.success || !res.data) {
+        setRecError(res.error ?? 'No recommendations returned.');
+        return;
+      }
+
+      setRecommendations(res.data);
+      setRecFallback(res.fallback === true);
+    } catch (err: any) {
+      setRecError(err.message || 'Failed to load recommendations.');
+    } finally {
+      setRecLoading(false);
+    }
+  };
+
+  const handleAcceptRec = async (rec: WeaknessRecommendation) => {
+    const currentQuests = await getHunterQuests();
+    const titleUpper = rec.title.toUpperCase();
+    const duplicate = currentQuests.some((q) => q.title.toUpperCase() === titleUpper);
+    if (duplicate) {
+      setMessage('DIRECTIVE ALREADY IN HUD');
+      setTimeout(() => setMessage(''), 3000);
+      setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
+      return;
+    }
+
+    let category: HunterQuest['category'] = 'General';
+    const catLower = (rec.category || '').toLowerCase();
+    if (catLower.includes('fit') || catLower.includes('strength')) category = 'Fitness';
+    else if (catLower.includes('study') || catLower.includes('know')) category = 'Study';
+    else if (catLower.includes('mind')) category = 'Mindfulness';
+    else if (catLower.includes('health')) category = 'Health';
+    else if (catLower.includes('disc')) category = 'Discipline';
+
+    let targetStat: StatType = 'discipline';
+    if (category === 'Fitness') targetStat = 'strength';
+    else if (category === 'Study') targetStat = 'knowledge';
+    else if (category === 'Health') targetStat = 'health';
+    else if (category === 'Mindfulness') targetStat = 'mindfulness';
+
+    const newQuest: HunterQuest = {
+      _id: `weakness_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      title: titleUpper,
+      description: rec.description,
+      category,
+      targetStat,
+      statBonus: 3,
+      xpReward: rec.suggestedReward,
+      deadline: rec.deadline,
+      generatedBy: 'ai',
+      status: 'active',
+    };
+
+    const updated = await addHunterQuests([newQuest]);
+    setQuests(updated);
+    setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
+    setMessage('WEAKNESS DIRECTIVE INJECTED INTO HUD');
+    setTimeout(() => setMessage(''), 4000);
+  };
+
+  const handleSkipRec = (rec: WeaknessRecommendation) => {
+    setSkippedRecs((prev) => [...prev, rec.title]);
+    setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
   };
 
   const handleGenerateAi = async () => {
@@ -259,6 +367,76 @@ export default function QuestsScreen() {
               <Text style={styles.toastText}>⚡ {message}</Text>
             </View>
           ) : null}
+
+          {/* Weakness-Based Recommendations */}
+          <View style={styles.recPanel}>
+            <View style={styles.recHeader}>
+              <View>
+                <Text style={styles.recTag}>SYSTEM // WEAKNESS ANALYSIS</Text>
+                <Text style={styles.recTitle}>RECOMMENDED DIRECTIVES</Text>
+              </View>
+              <Pressable
+                style={styles.recRefreshBtn}
+                onPress={fetchRecommendations}
+                disabled={recLoading}
+              >
+                <Text style={styles.recRefreshBtnText}>
+                  {recLoading ? '...' : '⟳ SCAN'}
+                </Text>
+              </Pressable>
+            </View>
+
+            {recFallback && (
+              <View style={styles.recFallbackBadge}>
+                <Text style={styles.recFallbackText}>⚠ OFFLINE MODE — EMBEDDED ENGINE ACTIVE</Text>
+              </View>
+            )}
+
+            {recLoading && (
+              <View style={styles.recStateBox}>
+                <Text style={styles.recStateText}>ANALYZING WEAKNESS MATRIX...</Text>
+              </View>
+            )}
+
+            {!recLoading && recError !== '' && (
+              <View style={styles.recStateBox}>
+                <Text style={styles.recErrorText}>{recError}</Text>
+                <Pressable style={styles.recRetryBtn} onPress={fetchRecommendations}>
+                  <Text style={styles.recRetryBtnText}>RETRY ⟳</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {!recLoading && recError === '' && recommendations.length === 0 && (
+              <View style={styles.recStateBox}>
+                <Text style={styles.recStateText}>
+                  Tap SCAN to generate weakness-based directives from your profile.
+                </Text>
+              </View>
+            )}
+
+            {!recLoading && recommendations.map((rec, idx) => (
+              <View key={`${rec.title}_${idx}`} style={styles.recCard}>
+                <View style={styles.recCardHeader}>
+                  <View style={styles.recCatBadge}>
+                    <Text style={styles.recCatBadgeText}>{rec.category.toUpperCase()}</Text>
+                  </View>
+                  <Text style={styles.recXpText}>+{rec.suggestedReward} XP</Text>
+                </View>
+                <Text style={styles.recCardTitle}>{rec.title}</Text>
+                <Text style={styles.recCardDesc}>{rec.description}</Text>
+                <Text style={styles.recDuration}>⏱ {rec.estimatedDuration} MIN · {rec.difficulty.toUpperCase()}</Text>
+                <View style={styles.recActions}>
+                  <Pressable style={styles.recSkipBtn} onPress={() => handleSkipRec(rec)}>
+                    <Text style={styles.recSkipBtnText}>SKIP</Text>
+                  </Pressable>
+                  <Pressable style={styles.recAcceptBtn} onPress={() => handleAcceptRec(rec)}>
+                    <Text style={styles.recAcceptBtnText}>ACCEPT DIRECTIVE ➔</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
 
           {/* Category Filter Pills */}
           <ScrollView
@@ -936,5 +1114,178 @@ const styles = StyleSheet.create({
     color: '#ffd700',
     fontSize: 11,
     fontWeight: '800',
+  },
+  // Weakness Recommendations
+  recPanel: {
+    backgroundColor: '#06121f',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1a3d62',
+    padding: 14,
+    marginBottom: 16,
+  },
+  recHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  recTag: {
+    color: '#fbb03b',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    marginBottom: 2,
+  },
+  recTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  recRefreshBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#0e2035',
+    borderWidth: 1,
+    borderColor: '#fbb03b',
+  },
+  recRefreshBtnText: {
+    color: '#fbb03b',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  recFallbackBadge: {
+    backgroundColor: '#1a1000',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#fbb03b',
+    padding: 6,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  recFallbackText: {
+    color: '#fbb03b',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  recStateBox: {
+    alignItems: 'center',
+    paddingVertical: 14,
+    gap: 8,
+  },
+  recStateText: {
+    color: '#4e7392',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
+  recErrorText: {
+    color: '#ff5376',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
+  recRetryBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ff5376',
+    backgroundColor: '#1a050a',
+  },
+  recRetryBtnText: {
+    color: '#ff5376',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  recCard: {
+    backgroundColor: '#081628',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#fbb03b44',
+    borderLeftWidth: 4,
+    borderLeftColor: '#fbb03b',
+    padding: 12,
+    marginBottom: 8,
+  },
+  recCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  recCatBadge: {
+    backgroundColor: '#fbb03b22',
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#fbb03b',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  recCatBadgeText: {
+    color: '#fbb03b',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  recXpText: {
+    color: '#fbb03b',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  recCardTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  recCardDesc: {
+    color: '#7b9cb8',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 6,
+  },
+  recDuration: {
+    color: '#547f9f',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 10,
+  },
+  recActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  recSkipBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#2a4a68',
+    backgroundColor: '#0a1d30',
+  },
+  recSkipBtnText: {
+    color: '#4e7392',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  recAcceptBtn: {
+    flex: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 7,
+    backgroundColor: '#fbb03b',
+    alignItems: 'center',
+  },
+  recAcceptBtnText: {
+    color: '#0a0800',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
 });
