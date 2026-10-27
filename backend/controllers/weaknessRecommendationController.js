@@ -1,4 +1,4 @@
-const { generateResponse } = require('../services/geminiService');
+const geminiService = require('../services/geminiService');
 
 /**
  * POST /generate (weakness-based recommendations)
@@ -19,28 +19,31 @@ async function generateWeaknessRecommendations(req, res) {
     preferredCategories,
   } = req.body || {};
 
-  // Basic validation
-  if (
-    !Array.isArray(goals) || goals.length === 0 ||
-    typeof stats !== 'object' || stats === null ||
-    !Array.isArray(recentQuests) ||
-    typeof availableMinutes !== 'number' || availableMinutes < 5 || availableMinutes > 1440 ||
-    !Array.isArray(preferredCategories) || preferredCategories.length === 0
-  ) {
-    return res.status(400).json({
-      success: false,
-      error: 'Invalid input: goals, stats, recentQuests, availableMinutes (5‑1440) and preferredCategories are required.',
-    });
+  // Validate or set safe defaults so recommendations always succeed reliably
+  if (goals !== undefined && (!Array.isArray(goals) || goals.length === 0)) {
+    return res.status(400).json({ success: false, error: 'goals must be a non-empty array of strings.' });
   }
+  if (stats !== undefined && (typeof stats !== 'object' || stats === null)) {
+    return res.status(400).json({ success: false, error: 'stats must be an object with numeric stats.' });
+  }
+  if (availableMinutes !== undefined && (typeof availableMinutes !== 'number' || availableMinutes < 5 || availableMinutes > 1440)) {
+    return res.status(400).json({ success: false, error: 'availableMinutes must be a number between 5 and 1440.' });
+  }
+
+  const safeGoals = Array.isArray(goals) && goals.length > 0 ? goals : ['General self-improvement'];
+  const safeStats = (typeof stats === 'object' && stats !== null) ? stats : { strength: 30, knowledge: 30, discipline: 30, health: 30, mindfulness: 30 };
+  const safeRecentQuests = Array.isArray(recentQuests) ? recentQuests : [];
+  const safeAvailableMinutes = typeof availableMinutes === 'number' ? availableMinutes : 45;
+  const safePreferredCategories = Array.isArray(preferredCategories) && preferredCategories.length > 0 ? preferredCategories : ['Fitness', 'Study', 'Discipline'];
 
   // Build a concise prompt for Gemini
   const prompt = [
     'You are the HunterOS quest generation AI. Based on the supplied user profile, suggest 3‑5 actionable quests.',
-    `Goals: ${goals.join(', ')}`,
-    `Stats: ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(', ')}`,
-    `Recent quests (status): ${recentQuests.map(q => `${q._id}:${q.status}`).join(', ')}`,
-    `Available time (minutes): ${availableMinutes}`,
-    `Preferred categories: ${preferredCategories.join(', ')}`,
+    `Goals: ${safeGoals.join(', ')}`,
+    `Stats: ${Object.entries(safeStats).map(([k, v]) => `${k}=${v}`).join(', ')}`,
+    `Recent quests (status): ${safeRecentQuests.map(q => `${q._id}:${q.status}`).join(', ')}`,
+    `Available time (minutes): ${safeAvailableMinutes}`,
+    `Preferred categories: ${safePreferredCategories.join(', ')}`,
     'Return a JSON array. Each item must contain:',
     '- title (string)',
     '- description (string)',
@@ -52,38 +55,79 @@ async function generateWeaknessRecommendations(req, res) {
   ].join('\n');
 
   let recommendations = null;
+  let usedFallback = false;
   if (process.env.GEMINI_API_KEY) {
-    const result = await generateResponse(prompt);
+    const result = await geminiService.generateResponse(prompt);
     if (result.success) {
-      recommendations = result.data;
+      const raw = result.data;
+      if (Array.isArray(raw)) {
+        recommendations = raw;
+      } else if (raw && typeof raw === 'object') {
+        recommendations = Array.isArray(raw.recommendations)
+          ? raw.recommendations
+          : (Array.isArray(raw.quests) ? raw.quests : (Array.isArray(raw.data) ? raw.data : null));
+      }
     } else {
       // Gemini call failed – will fall back below
       console.warn('Gemini recommendation error:', result.error);
     }
   }
 
-  // Helper to validate a single recommendation object
-  const isValidRec = (rec) => {
-    return (
-      rec &&
-      typeof rec.title === 'string' && rec.title.trim().length > 0 &&
-      typeof rec.description === 'string' && rec.description.trim().length > 0 &&
-      typeof rec.category === 'string' && rec.category.trim().length > 0 &&
-      typeof rec.estimatedDuration === 'number' && rec.estimatedDuration >= 5 && rec.estimatedDuration <= 240 &&
-      ['Beginner', 'Intermediate', 'Advanced'].includes(rec.difficulty) &&
-      typeof rec.deadline === 'string' && !Number.isNaN(new Date(rec.deadline).getTime()) &&
-      typeof rec.suggestedReward === 'number' && rec.suggestedReward >= 1 && rec.suggestedReward <= 1000
-    );
+  // Normalizer / validation helper for a single recommendation object
+  const normalizeRec = (rec) => {
+    if (!rec || typeof rec !== 'object') return null;
+    const title = typeof rec.title === 'string' && rec.title.trim().length > 0 ? rec.title.trim() : null;
+    const description = typeof rec.description === 'string' && rec.description.trim().length > 0 ? rec.description.trim() : null;
+    const category = typeof rec.category === 'string' && rec.category.trim().length > 0 ? rec.category.trim() : 'General';
+    if (!title || !description) return null;
+
+    const duration = typeof rec.estimatedDuration === 'number'
+      ? rec.estimatedDuration
+      : parseInt(String(rec.estimatedDuration || '').replace(/\D/g, ''), 10) || 30;
+    const reward = typeof rec.suggestedReward === 'number'
+      ? rec.suggestedReward
+      : parseInt(String(rec.suggestedReward || '').replace(/\D/g, ''), 10) || 50;
+
+    let diff = 'Intermediate';
+    const rawDiff = String(rec.difficulty || '').toLowerCase();
+    if (rawDiff.includes('begin')) diff = 'Beginner';
+    else if (rawDiff.includes('adv')) diff = 'Advanced';
+
+    let deadline = rec.deadline;
+    if (!deadline || Number.isNaN(new Date(deadline).getTime()) || new Date(deadline).getTime() <= Date.now()) {
+      deadline = new Date(Date.now() + Math.max(duration * 60 * 1000, 4 * 60 * 60 * 1000)).toISOString();
+    }
+
+    return {
+      title,
+      description,
+      category,
+      estimatedDuration: Math.max(5, Math.min(240, duration)),
+      difficulty: diff,
+      deadline,
+      suggestedReward: Math.max(1, Math.min(1000, reward)),
+    };
   };
 
-  // If Gemini missing or malformed, fallback deterministic generator
-  if (!Array.isArray(recommendations) || recommendations.some(r => !isValidRec(r))) {
+  let validLiveRecs = null;
+  if (Array.isArray(recommendations)) {
+    const parsed = recommendations.map(normalizeRec);
+    if (parsed.every(r => r !== null) && parsed.length > 0) {
+      validLiveRecs = parsed;
+    }
+  }
+
+  if (validLiveRecs) {
+    recommendations = validLiveRecs;
+    usedFallback = false;
+  } else {
+    usedFallback = true;
     // Simple deterministic fallback – generate generic quests using supplied data
-    const base = goals[0] || 'Goal';
-    const cat = preferredCategories[0] || 'General';
-    const dur1 = Math.max(10, Math.min(Math.round(availableMinutes * 0.3), 60));
-    const dur2 = Math.max(15, Math.min(Math.round(availableMinutes * 0.4), 90));
-    const dur3 = Math.max(10, Math.min(Math.round(availableMinutes * 0.3), 45));
+    const base = safeGoals[0] || 'Goal';
+    const cat = safePreferredCategories[0] || 'General';
+    const dur1 = Math.max(10, Math.min(Math.round(safeAvailableMinutes * 0.3), 60));
+    const dur2 = Math.max(15, Math.min(Math.round(safeAvailableMinutes * 0.4), 90));
+    const dur3 = Math.max(10, Math.min(Math.round(safeAvailableMinutes * 0.3), 45));
     const now = new Date();
     recommendations = [
       {
@@ -116,13 +160,12 @@ async function generateWeaknessRecommendations(req, res) {
     ];
   }
 
-  // Final validation before responding
-  const allValid = Array.isArray(recommendations) && recommendations.every(isValidRec);
-  if (!allValid) {
-    return res.status(502).json({ success: false, error: 'Invalid recommendation data received from AI.' });
-  }
-
-  return res.json({ success: true, recommendations });
+  return res.json({
+    success: true,
+    fallback: usedFallback,
+    recommendations,
+    data: recommendations,
+  });
 }
 
 module.exports = { generateWeaknessRecommendations };

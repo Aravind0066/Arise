@@ -70,10 +70,26 @@ async function chat(req, res) {
 
   if (!isValidReply(reply)) {
     usedFallback = true;
-    reply = 'I’m sorry, I can’t generate a response right now. Please try again later.';
+    const lower = message.toLowerCase();
+    if (lower.includes('study') || lower.includes('learn') || lower.includes('focus')) {
+      reply = 'Hunter directive: Implement 25-minute Pomodoro focus blocks with zero notifications. Log each study block to raise your Knowledge stat.';
+    } else if (lower.includes('routine') || lower.includes('workout') || lower.includes('fitness') || lower.includes('exercise')) {
+      reply = 'Hunter directive: Execute 20 push-ups, 30 bodyweight squats, and a 60-second core plank to calibrate your physical matrix.';
+    } else if (lower.includes('discipline') || lower.includes('habit') || lower.includes('procrastinat')) {
+      reply = 'Hunter directive: Eliminate micro-distractions such as infinite scrolling. System discipline scales through consistent daily execution.';
+    } else if (lower.includes('eat') || lower.includes('nutrition') || lower.includes('diet') || lower.includes('food')) {
+      reply = 'Hunter directive: Consume complex carbohydrates and lean protein 45 minutes prior to dungeon entry for optimal glycogen availability.';
+    } else {
+      reply = 'Hunter directive received. Maintain strict focus on your active directives, daily habits, and recovery protocols to ascend ranks.';
+    }
   }
 
-  return res.json({ success: true, fallback: usedFallback, reply });
+  return res.json({
+    success: true,
+    fallback: usedFallback,
+    reply,
+    data: { reply, fallback: usedFallback },
+  });
 }
 
 module.exports = { chat };

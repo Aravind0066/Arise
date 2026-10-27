@@ -33,6 +33,17 @@ npm run dev
 ```
 *Starts the Express backend on `http://localhost:5000` and Expo Web on `http://localhost:8081`.*
 
+The app sends AI requests to the backend under `/api`. For Expo Web, the default is
+the current browser host on port `5000`. If Expo is running on another device or
+host, set `EXPO_PUBLIC_API_URL` before starting Expo, for example:
+
+```bash
+EXPO_PUBLIC_API_URL=http://192.168.1.20:5000/api npx expo start
+```
+
+The value may also be supplied as `http://192.168.1.20:5000`; the app normalizes
+the `/api` suffix.
+
 ---
 
 ## 🧪 Testing & Verification

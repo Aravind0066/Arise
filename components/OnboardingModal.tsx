@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -13,9 +14,13 @@ import {
   saveHunterProfile,
   saveHunterStats,
   unlockAchievement,
+  clearOnboardingDraft,
+  getOnboardingDraft,
+  saveOnboardingDraft,
 } from '../lib/hunterStorage';
 import { HunterProfile, HunterStats } from '../lib/hunterTypes';
 import { PentagonChart } from './PentagonChart';
+import { getAnalysisFocusAreas, OnboardingStep } from '../lib/onboardingFlow';
 
 interface OnboardingModalProps {
   visible: boolean;
@@ -23,11 +28,13 @@ interface OnboardingModalProps {
 }
 
 export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
+  const [step, setStep] = useState<OnboardingStep>('welcome');
+  const hydrated = useRef(false);
 
   // Form states
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
   const [height, setHeight] = useState('175');
   const [weight, setWeight] = useState('70');
   const [age, setAge] = useState('21');
@@ -47,18 +54,49 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
 
   const [errorMsg, setErrorMsg] = useState('');
 
-  const nextFromStep1 = () => {
-    if (!name.trim()) {
-      setErrorMsg('Hunter designation name is required.');
-      return;
-    }
-    setErrorMsg('');
-    setStep(2);
-  };
+  useEffect(() => {
+    if (!visible) return;
+    hydrated.current = false;
+    getOnboardingDraft().then((draft) => {
+      if (draft) {
+        setStep(draft.step);
+        setName(draft.name);
+        setHeight(draft.height);
+        setWeight(draft.weight);
+        setAge(draft.age);
+        setPrimaryGoal(draft.primaryGoal);
+        setFitnessLevel(draft.fitnessLevel);
+        setStudyFocus(draft.studyFocus);
+        setWeakness(draft.weakness);
+        setRestDay(draft.restDay);
+        if (draft.generatedResult) setGeneratedResult(draft.generatedResult);
+      }
+      hydrated.current = true;
+    }).catch((err) => {
+      console.warn('Failed to restore onboarding progress:', err);
+      hydrated.current = true;
+    });
+  }, [visible]);
 
-  const nextFromStep2 = () => {
-    setStep(3);
-  };
+  useEffect(() => {
+    if (!visible || !hydrated.current) return;
+    saveOnboardingDraft({
+      step,
+      name,
+      height,
+      weight,
+      age,
+      primaryGoal,
+      fitnessLevel,
+      studyFocus,
+      weakness,
+      restDay,
+      generatedResult: generatedResult ?? undefined,
+    }).catch((err) => console.warn('Failed to save onboarding progress:', err));
+  }, [
+    visible, step, name, height, weight, age, primaryGoal, fitnessLevel,
+    studyFocus, weakness, restDay, generatedResult,
+  ]);
 
   const calculateAndShowAwakening = () => {
     const res = calculateStartingAttributes({
@@ -71,7 +109,7 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
       weakness,
     });
     setGeneratedResult(res);
-    setStep(4);
+    setStep('analysis');
   };
 
   const finalizeAwakening = async () => {
@@ -80,7 +118,7 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
     const newProfile: HunterProfile = {
       _id: `hunter_${Date.now()}`,
       name: name.trim() || 'Jin-Woo',
-      email: email.trim().toLowerCase() || 'hunter@system.io',
+      email: 'local@hunteros',
       title: generatedResult.title,
       rank: 'E-Rank',
       height: Number(height) || 175,
@@ -103,94 +141,100 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
     await saveHunterProfile(newProfile);
     await saveHunterStats(generatedResult.stats);
     await unlockAchievement('awakening');
+    await clearOnboardingDraft();
 
     onComplete(newProfile, generatedResult.stats);
   };
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false}>
-      <View style={styles.root}>
-        <ScrollView contentContainerStyle={styles.container}>
+      <View style={themedStyles.root}>
+        <ScrollView contentContainerStyle={themedStyles.container}>
           {/* Header */}
-          <View style={styles.header}>
-            <Text style={styles.systemTag}>SYSTEM // BASELINE ASSESSMENT</Text>
-            <Text style={styles.stepIndicator}>PHASE {step} OF 4</Text>
+          <View style={themedStyles.header}>
+            <Text style={themedStyles.systemTag}>SYSTEM // BASELINE ASSESSMENT</Text>
+            <Text style={themedStyles.stepIndicator}>
+              PHASE {Math.max(1, ['welcome', 'baseline', 'goals', 'analysis', 'identity'].indexOf(step) + 1)} OF 5
+            </Text>
           </View>
 
-          {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}
+          {errorMsg ? <Text style={themedStyles.error}>{errorMsg}</Text> : null}
 
-          {/* STEP 1: IDENTITY & BIOMETRICS */}
-          {step === 1 && (
-            <View style={styles.stepContent}>
-              <Text style={styles.title}>CHARACTER CREATION</Text>
-              <Text style={styles.subtitle}>
-                A System has manifested in your reality. Enter your baseline biological parameters.
+          {/* STEP 1: AWAKENING */}
+          {step === 'welcome' && (
+            <View style={themedStyles.stepContent}>
+              <Text style={themedStyles.title}>THE AWAKENING</Text>
+              <Text style={themedStyles.subtitle}>
+                A System has manifested in your reality. Complete a short assessment to initialize your local Hunter profile.
               </Text>
-
-              <Text style={styles.label}>HUNTER DESIGNATION (NAME)</Text>
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="e.g. Sung Jin-Woo, Alex, Rohan"
-                placeholderTextColor="#3e6382"
-                style={styles.input}
-              />
-
-              <Text style={styles.label}>EMAIL / CODENAME (LOCAL PROFILE)</Text>
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                placeholder="hunter@system.io"
-                autoCapitalize="none"
-                placeholderTextColor="#3e6382"
-                style={styles.input}
-              />
-
-              <View style={styles.row}>
-                <View style={styles.col}>
-                  <Text style={styles.label}>HEIGHT (CM)</Text>
-                  <TextInput
-                    value={height}
-                    onChangeText={setHeight}
-                    keyboardType="numeric"
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>WEIGHT (KG)</Text>
-                  <TextInput
-                    value={weight}
-                    onChangeText={setWeight}
-                    keyboardType="numeric"
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>AGE</Text>
-                  <TextInput
-                    value={age}
-                    onChangeText={setAge}
-                    keyboardType="numeric"
-                    style={styles.input}
-                  />
-                </View>
-              </View>
-
-              <Pressable style={styles.primaryButton} onPress={nextFromStep1}>
-                <Text style={styles.buttonText}>PROCEED TO CALIBRATION ➔</Text>
+              <Text style={themedStyles.restNote}>No account or login is required. Your profile and progress stay on this device.</Text>
+              <Pressable style={themedStyles.primaryButton} onPress={() => setStep('baseline')}>
+                <Text style={themedStyles.buttonText}>BEGIN BASELINE ASSESSMENT ➔</Text>
               </Pressable>
             </View>
           )}
 
-          {/* STEP 2: GOALS & FITNESS */}
-          {step === 2 && (
-            <View style={styles.stepContent}>
-              <Text style={styles.title}>PRIMARY DIRECTIVES</Text>
-              <Text style={styles.subtitle}>
+          {/* STEP 2: BASELINE ASSESSMENT */}
+          {step === 'baseline' && (
+            <View style={themedStyles.stepContent}>
+              <Text style={themedStyles.title}>BASELINE ASSESSMENT</Text>
+              <Text style={themedStyles.subtitle}>Enter the biological and habit inputs used to calculate your starting attributes.</Text>
+              <View style={themedStyles.row}>
+                <View style={themedStyles.col}>
+                  <Text style={themedStyles.label}>HEIGHT (CM)</Text>
+                  <TextInput
+                    value={height}
+                    onChangeText={setHeight}
+                    keyboardType="numeric"
+                    style={themedStyles.input}
+                  />
+                </View>
+                <View style={themedStyles.col}>
+                  <Text style={themedStyles.label}>WEIGHT (KG)</Text>
+                  <TextInput
+                    value={weight}
+                    onChangeText={setWeight}
+                    keyboardType="numeric"
+                    style={themedStyles.input}
+                  />
+                </View>
+                <View style={themedStyles.col}>
+                  <Text style={themedStyles.label}>AGE</Text>
+                  <TextInput
+                    value={age}
+                    onChangeText={setAge}
+                    keyboardType="numeric"
+                    style={themedStyles.input}
+                  />
+                </View>
+              </View>
+              <Text style={themedStyles.label}>BIGGEST OBSTACLE / SHADOW HABIT</Text>
+              {[
+                'Instagram Reels & Doomscrolling',
+                'Procrastination & Avoidance of Hard Tasks',
+                'Inconsistent Sleep & Chronic Fatigue',
+                'Skipping Workouts & Poor Diet',
+              ].map((opt) => (
+                <Pressable key={opt} style={[themedStyles.optionButton, weakness === opt && themedStyles.optionSelected]} onPress={() => setWeakness(opt)}>
+                  <Text style={[themedStyles.optionText, weakness === opt && themedStyles.optionTextSelected]}>{weakness === opt ? '▶ ' : '○ '}{opt}</Text>
+                </Pressable>
+              ))}
+              <View style={themedStyles.buttonRow}>
+                <Pressable style={themedStyles.backButton} onPress={() => setStep('welcome')}><Text style={themedStyles.backText}>BACK</Text></Pressable>
+                <Pressable style={[themedStyles.primaryButton, { flex: 1 }]} onPress={() => setStep('goals')}><Text style={themedStyles.buttonText}>GOALS ➔</Text></Pressable>
+              </View>
+            </View>
+          )}
+
+          {/* STEP 3: GOALS */}
+          {step === 'goals' && (
+            <View style={themedStyles.stepContent}>
+              <Text style={themedStyles.title}>PRIMARY DIRECTIVES</Text>
+              <Text style={themedStyles.subtitle}>
                 Define your core evolutionary goals and current physical conditioning.
               </Text>
 
-              <Text style={styles.label}>PRIMARY MISSION OBJECTIVE</Text>
+              <Text style={themedStyles.label}>PRIMARY MISSION OBJECTIVE</Text>
               {[
                 'Strength & Aesthetic Physique',
                 'Software Engineering, DSA & High GPA',
@@ -200,15 +244,15 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
                 <Pressable
                   key={goalOption}
                   style={[
-                    styles.optionButton,
-                    primaryGoal === goalOption && styles.optionSelected,
+                    themedStyles.optionButton,
+                    primaryGoal === goalOption && themedStyles.optionSelected,
                   ]}
                   onPress={() => setPrimaryGoal(goalOption)}
                 >
                   <Text
                     style={[
-                      styles.optionText,
-                      primaryGoal === goalOption && styles.optionTextSelected,
+                      themedStyles.optionText,
+                      primaryGoal === goalOption && themedStyles.optionTextSelected,
                     ]}
                   >
                     {primaryGoal === goalOption ? '▶ ' : '○ '} {goalOption}
@@ -216,21 +260,21 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
                 </Pressable>
               ))}
 
-              <Text style={[styles.label, { marginTop: 18 }]}>PHYSICAL PREPARATION LEVEL</Text>
-              <View style={styles.row}>
+              <Text style={[themedStyles.label, { marginTop: 18 }]}>PHYSICAL PREPARATION LEVEL</Text>
+              <View style={themedStyles.row}>
                 {(['Beginner', 'Intermediate', 'Advanced'] as const).map((lvl) => (
                   <Pressable
                     key={lvl}
                     style={[
-                      styles.chip,
-                      fitnessLevel === lvl && styles.chipSelected,
+                      themedStyles.chip,
+                      fitnessLevel === lvl && themedStyles.chipSelected,
                     ]}
                     onPress={() => setFitnessLevel(lvl)}
                   >
                     <Text
                       style={[
-                        styles.chipText,
-                        fitnessLevel === lvl && styles.chipTextSelected,
+                        themedStyles.chipText,
+                        fitnessLevel === lvl && themedStyles.chipTextSelected,
                       ]}
                     >
                       {lvl.toUpperCase()}
@@ -239,139 +283,104 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
                 ))}
               </View>
 
-              <Text style={[styles.label, { marginTop: 18 }]}>KNOWLEDGE DOMAIN</Text>
+              <Text style={[themedStyles.label, { marginTop: 18 }]}>KNOWLEDGE DOMAIN</Text>
               <TextInput
                 value={studyFocus}
                 onChangeText={setStudyFocus}
                 placeholder="e.g. Computer Science, Medical, Finance"
-                placeholderTextColor="#3e6382"
-                style={styles.input}
+                placeholderTextColor={theme.textSecondary}
+                style={themedStyles.input}
               />
 
-              <View style={styles.buttonRow}>
-                <Pressable style={styles.backButton} onPress={() => setStep(1)}>
-                  <Text style={styles.backText}>BACK</Text>
+              <View style={themedStyles.buttonRow}>
+                <Pressable style={themedStyles.backButton} onPress={() => setStep('baseline')}>
+                  <Text style={themedStyles.backText}>BACK</Text>
                 </Pressable>
-                <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={nextFromStep2}>
-                  <Text style={styles.buttonText}>NEXT ➔</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-
-          {/* STEP 3: VULNERABILITY & REST DAY */}
-          {step === 3 && (
-            <View style={styles.stepContent}>
-              <Text style={styles.title}>VULNERABILITY AUDIT</Text>
-              <Text style={styles.subtitle}>
-                The system requires transparency. Identify your primary resistance points.
-              </Text>
-
-              <Text style={styles.label}>BIGGEST OBSTACLE / SHADOW HABIT</Text>
-              {[
-                'Instagram Reels & Doomscrolling',
-                'Procrastination & Avoidance of Hard Tasks',
-                'Inconsistent Sleep & Chronic Fatigue',
-                'Skipping Workouts & Poor Diet',
-              ].map((opt) => (
-                <Pressable
-                  key={opt}
-                  style={[
-                    styles.optionButton,
-                    weakness === opt && styles.optionSelected,
-                  ]}
-                  onPress={() => setWeakness(opt)}
-                >
-                  <Text
-                    style={[
-                      styles.optionText,
-                      weakness === opt && styles.optionTextSelected,
-                    ]}
-                  >
-                    {weakness === opt ? '▶ ' : '○ '} {opt}
-                  </Text>
-                </Pressable>
-              ))}
-
-              <Text style={[styles.label, { marginTop: 20 }]}>
-                REST DAY PROTOCOL (NO STAT DECAY PENALTY)
-              </Text>
-              <View style={styles.row}>
-                {['Sunday', 'Saturday', 'Wednesday'].map((day) => (
-                  <Pressable
-                    key={day}
-                    style={[styles.chip, restDay === day && styles.chipSelected]}
-                    onPress={() => setRestDay(day)}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        restDay === day && styles.chipTextSelected,
-                      ]}
-                    >
-                      {day.toUpperCase()}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              <View style={styles.buttonRow}>
-                <Pressable style={styles.backButton} onPress={() => setStep(2)}>
-                  <Text style={styles.backText}>BACK</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.primaryButton, { flex: 1 }]}
-                  onPress={calculateAndShowAwakening}
-                >
-                  <Text style={styles.buttonText}>CALCULATE PENTAGON STATS ➔</Text>
+                <Pressable style={[themedStyles.primaryButton, { flex: 1 }]} onPress={() => {
+                  const res = calculateStartingAttributes({
+                    height: Number(height) || 175, weight: Number(weight) || 70, age: Number(age) || 21,
+                    fitnessLevel, primaryGoal, studyFocus, weakness,
+                  });
+                  setGeneratedResult(res);
+                  setStep('analysis');
+                }}>
+                  <Text style={themedStyles.buttonText}>ANALYZE MY HUNTER PROFILE ➔</Text>
                 </Pressable>
               </View>
             </View>
           )}
 
-          {/* STEP 4: AWAKENING SCREEN */}
-          {step === 4 && generatedResult && (
-            <View style={styles.stepContent}>
-              <View style={styles.awakenedBadge}>
-                <Text style={styles.awakenedBadgeText}>SYSTEM RECOGNITION CONFIRMED</Text>
+          {/* STEP 4: ANALYSIS REVEAL */}
+          {step === 'analysis' && generatedResult && (
+            <View style={themedStyles.stepContent}>
+              <View style={themedStyles.awakenedBadge}>
+                <Text style={themedStyles.awakenedBadgeText}>SYSTEM RECOGNITION CONFIRMED</Text>
               </View>
 
-              <Text style={styles.titleCenter}>YOU HAVE AWAKENED</Text>
-              <Text style={styles.titleAssigned}>[ {generatedResult.title} ]</Text>
+              <Text style={themedStyles.titleCenter}>YOU HAVE AWAKENED</Text>
+              <Text style={themedStyles.titleAssigned}>[ {generatedResult.title} ]</Text>
 
-              <Text style={styles.pentagonTitle}>INITIAL PENTAGON RADAR ATTRIBUTES</Text>
+              <Text style={themedStyles.pentagonTitle}>INITIAL PENTAGON RADAR ATTRIBUTES</Text>
               <PentagonChart stats={generatedResult.stats} size={280} />
 
-              <View style={styles.statPills}>
-                <View style={styles.pill}>
-                  <Text style={styles.pillLabel}>STR</Text>
-                  <Text style={styles.pillVal}>{generatedResult.stats.strength}</Text>
+              <View style={themedStyles.statPills}>
+                <View style={themedStyles.pill}>
+                  <Text style={themedStyles.pillLabel}>STR</Text>
+                  <Text style={themedStyles.pillVal}>{generatedResult.stats.strength}</Text>
                 </View>
-                <View style={styles.pill}>
-                  <Text style={styles.pillLabel}>KNW</Text>
-                  <Text style={styles.pillVal}>{generatedResult.stats.knowledge}</Text>
+                <View style={themedStyles.pill}>
+                  <Text style={themedStyles.pillLabel}>KNW</Text>
+                  <Text style={themedStyles.pillVal}>{generatedResult.stats.knowledge}</Text>
                 </View>
-                <View style={styles.pill}>
-                  <Text style={styles.pillLabel}>DIS</Text>
-                  <Text style={styles.pillVal}>{generatedResult.stats.discipline}</Text>
+                <View style={themedStyles.pill}>
+                  <Text style={themedStyles.pillLabel}>DIS</Text>
+                  <Text style={themedStyles.pillVal}>{generatedResult.stats.discipline}</Text>
                 </View>
-                <View style={styles.pill}>
-                  <Text style={styles.pillLabel}>HLT</Text>
-                  <Text style={styles.pillVal}>{generatedResult.stats.health}</Text>
+                <View style={themedStyles.pill}>
+                  <Text style={themedStyles.pillLabel}>HLT</Text>
+                  <Text style={themedStyles.pillVal}>{generatedResult.stats.health}</Text>
                 </View>
-                <View style={styles.pill}>
-                  <Text style={styles.pillLabel}>MND</Text>
-                  <Text style={styles.pillVal}>{generatedResult.stats.mindfulness}</Text>
+                <View style={themedStyles.pill}>
+                  <Text style={themedStyles.pillLabel}>MND</Text>
+                  <Text style={themedStyles.pillVal}>{generatedResult.stats.mindfulness}</Text>
                 </View>
               </View>
 
-              <Text style={styles.restNote}>
+              <Text style={themedStyles.restNote}>
                 Weekly Rest Protocol active on {restDay}s. Quests grant full XP.
               </Text>
+              <Text style={themedStyles.label}>FOCUS AREAS</Text>
+              <Text style={themedStyles.restNote}>{getAnalysisFocusAreas(generatedResult.stats).map((area) => area.toUpperCase()).join(' · ')}</Text>
+              <Text style={themedStyles.restNote}>Recommendations are based on your selected goal, study focus, and obstacle.</Text>
+              <View style={themedStyles.buttonRow}>
+                <Pressable style={themedStyles.backButton} onPress={() => setStep('goals')}><Text style={themedStyles.backText}>BACK</Text></Pressable>
+                <Pressable style={[themedStyles.awakenButton, { flex: 1 }]} onPress={() => setStep('identity')}>
+                  <Text style={themedStyles.awakenButtonText}>SET HUNTER IDENTITY ➔</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
 
-              <Pressable style={styles.awakenButton} onPress={finalizeAwakening}>
-                <Text style={styles.awakenButtonText}>ENTER HUNTER SYSTEM ➔</Text>
-              </Pressable>
+          {/* STEP 5: LOCAL IDENTITY */}
+          {step === 'identity' && (
+            <View style={themedStyles.stepContent}>
+              <Text style={themedStyles.title}>HUNTER IDENTITY</Text>
+              <Text style={themedStyles.subtitle}>Choose the name or codename shown on this device. This is a local profile, not an account login.</Text>
+              <Text style={themedStyles.label}>HUNTER DESIGNATION</Text>
+              <TextInput value={name} onChangeText={setName} placeholder="e.g. Alex or Shadow-07" placeholderTextColor={theme.textSecondary} style={themedStyles.input} />
+              <View style={themedStyles.buttonRow}>
+                <Pressable style={themedStyles.backButton} onPress={() => setStep('analysis')}><Text style={themedStyles.backText}>BACK</Text></Pressable>
+                <Pressable style={[themedStyles.awakenButton, { flex: 1 }]} onPress={() => {
+                  if (!name.trim()) {
+                    setErrorMsg('Hunter designation name is required.');
+                    return;
+                  }
+                  setErrorMsg('');
+                  finalizeAwakening();
+                }}>
+                  <Text style={themedStyles.awakenButtonText}>ENTER HUNTER SYSTEM ➔</Text>
+                </Pressable>
+              </View>
             </View>
           )}
         </ScrollView>

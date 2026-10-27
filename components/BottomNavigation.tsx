@@ -1,38 +1,57 @@
+import { useThemedStyles } from '../lib/AppearanceContext';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useAppearance } from '../lib/AppearanceContext';
 
-export type NavigationTab = 'status' | 'quests' | 'tools' | 'history' | 'profile';
+export type NavigationTab = 'home' | 'quests' | 'tools' | 'system';
 
 const TABS: {
   key: NavigationTab;
   label: string;
   icon: string;
-  route: '/' | '/quests' | '/tools' | '/history' | '/profile';
+  route: '/' | '/quests' | '/tools' | '/profile';
 }[] = [
-  { key: 'status', label: 'STATUS', icon: '⚡', route: '/' },
-  { key: 'quests', label: 'QUESTS', icon: '⚔️', route: '/quests' },
-  { key: 'tools', label: 'TOOLS', icon: '🛠️', route: '/tools' },
-  { key: 'history', label: 'LOGS', icon: '📜', route: '/history' },
-  { key: 'profile', label: 'SYSTEM', icon: '👤', route: '/profile' },
+  { key: 'home', label: 'Home', icon: '⌂', route: '/' },
+  { key: 'quests', label: 'Quest', icon: '⚔️', route: '/quests' },
+  { key: 'tools', label: 'Tools', icon: '🛠️', route: '/tools' },
+  { key: 'system', label: 'System', icon: '👤', route: '/profile' },
 ];
 
 export function BottomNavigation({ active }: { active: NavigationTab }) {
+  const themedStyles = useThemedStyles(styles);
   const router = useRouter();
+  const { theme, typography } = useAppearance();
 
   return (
-    <View style={styles.container}>
+    <View style={[themedStyles.container, { backgroundColor: theme.background, borderTopColor: theme.border }]}>
       {TABS.map((tab) => {
         const isActive = active === tab.key;
         return (
           <Pressable
             key={tab.key}
-            style={styles.tab}
+            style={themedStyles.tab}
             onPress={() => router.replace(tab.route)}
           >
-            <View style={[styles.tabIndicator, isActive && styles.activeIndicator]} />
-            <Text style={[styles.icon, isActive && styles.activeIcon]}>{tab.icon}</Text>
-            <Text style={[styles.label, isActive && styles.activeLabel]}>{tab.label}</Text>
+            <View style={[themedStyles.tabIndicator, isActive && { backgroundColor: theme.accent }]} />
+            <Text
+              style={[
+                themedStyles.icon,
+                { color: isActive ? theme.accent : theme.textSecondary },
+                isActive && themedStyles.activeIcon,
+              ]}
+            >
+              {tab.icon}
+            </Text>
+            <Text
+              style={[
+                themedStyles.label,
+                { color: theme.textSecondary, fontSize: typography.label },
+                isActive && { color: theme.accent },
+              ]}
+            >
+              {tab.label}
+            </Text>
           </Pressable>
         );
       })}
@@ -77,9 +96,9 @@ const styles = StyleSheet.create({
   },
   label: {
     color: '#4f7288',
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '900',
-    letterSpacing: 1.2,
+    letterSpacing: 0.5,
   },
   activeLabel: {
     color: '#00f3ff',

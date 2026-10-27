@@ -9,6 +9,7 @@ import type {
   JournalEntry,
   ScreenTimeRecord,
   StatType,
+  WorkoutRoutine,
   WorkoutLog,
 } from './hunterTypes';
 
@@ -106,8 +107,65 @@ const JOURNAL_KEY = 'hunteros.journal.v2';
 const WORKOUT_KEY = 'hunteros.workout.v2';
 const ACHIEVEMENTS_KEY = 'hunteros.achievements.v2';
 const SCREENTIME_KEY = 'hunteros.screentime.v2';
+const DAILY_WORKOUT_PLAN_KEY = 'hunteros.dailyWorkoutPlan.v1';
+const ONBOARDING_DRAFT_KEY = 'hunteros.onboardingDraft.v1';
+
+export interface SavedDailyWorkoutPlan {
+  localDate: string;
+  restDay: string;
+  isRestDay: boolean;
+  routine: WorkoutRoutine | null;
+  source: 'ai' | 'fallback' | 'rest';
+  message?: string;
+}
+
+export async function getSavedDailyWorkoutPlan(): Promise<SavedDailyWorkoutPlan | null> {
+  try {
+    const raw = await AsyncStorage.getItem(DAILY_WORKOUT_PLAN_KEY);
+    return raw ? JSON.parse(raw) as SavedDailyWorkoutPlan : null;
+  } catch (err) {
+    console.warn('Failed to load daily workout plan:', err);
+    return null;
+  }
+}
+
+export async function saveDailyWorkoutPlan(plan: SavedDailyWorkoutPlan): Promise<void> {
+  await AsyncStorage.setItem(DAILY_WORKOUT_PLAN_KEY, JSON.stringify(plan));
+}
 
 export const XP_PER_LEVEL = 500;
+
+export interface OnboardingDraft {
+  step: 'welcome' | 'baseline' | 'goals' | 'analysis' | 'identity';
+  name: string;
+  height: string;
+  weight: string;
+  age: string;
+  primaryGoal: string;
+  fitnessLevel: 'Beginner' | 'Intermediate' | 'Advanced';
+  studyFocus: string;
+  weakness: string;
+  restDay: string;
+  generatedResult?: { stats: HunterStats; title: string };
+}
+
+export async function getOnboardingDraft(): Promise<OnboardingDraft | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ONBOARDING_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.warn('Failed to parse onboarding draft:', err);
+    return null;
+  }
+}
+
+export async function saveOnboardingDraft(draft: OnboardingDraft): Promise<void> {
+  await AsyncStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft));
+}
+
+export async function clearOnboardingDraft(): Promise<void> {
+  await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+}
 
 export function getRankFromLevel(level: number): HunterRank {
   if (level >= 50) return 'National Level';
@@ -723,6 +781,8 @@ export async function saveScreenTimeVictory(screenData: ScreenTimeRecord): Promi
   return { screenData, profile, stats };
 }
 
+const CURRENT_USER_KEY = 'arise.currentUser';
+
 export async function resetAllData(): Promise<void> {
   await AsyncStorage.multiRemove([
     PROFILE_KEY,
@@ -733,5 +793,8 @@ export async function resetAllData(): Promise<void> {
     WORKOUT_KEY,
     ACHIEVEMENTS_KEY,
     SCREENTIME_KEY,
+    DAILY_WORKOUT_PLAN_KEY,
+    CURRENT_USER_KEY,
+    ONBOARDING_DRAFT_KEY,
   ]);
 }

@@ -28,9 +28,12 @@ export type AiGenerateResponse = ApiResponse<{ reply: string }>;
 export interface WeaknessInput {
   goals: string[];
   stats: Record<string, number>;
-  completedQuests: string[];
+  completedQuests?: string[];
   skippedQuests?: string[];
   difficulty?: string;
+  recentQuests?: { _id: string; status: string }[];
+  availableMinutes?: number;
+  preferredCategories?: string[];
 }
 
 /** Single weakness recommendation */
@@ -44,17 +47,25 @@ export interface WeaknessRecommendation {
   suggestedReward: number; // XP
 }
 
-export type WeaknessResponse = ApiResponse<WeaknessRecommendation[]>;
+export interface WeaknessResponse {
+  success: boolean;
+  recommendations?: WeaknessRecommendation[];
+  data?: WeaknessRecommendation[];
+  fallback?: boolean;
+  error?: string;
+}
 
 /** Input for nutrition recommendation */
 export interface NutritionInput {
   fitnessGoal?: string;
   dietaryPreferences?: string[];
   allergies?: string[];
+  restrictions?: string[];
   budget?: number; // optional currency units
   availableIngredients?: string[];
   mealType?: string;
   preparationTime?: number; // minutes
+  prepTimeMinutes?: number; // minutes
 }
 
 /** Single nutrition recommendation */
@@ -64,14 +75,29 @@ export interface NutritionRecommendation {
   portions: string;
   steps: string[];
   nutrition?: {
-    calories?: number;
-    protein?: number; // grams
+    calories?: number | string;
+    protein?: number | string; // grams or provider-formatted amount
+    approximateCalories?: number | string;
+    approximateProtein?: number | string;
     note?: string;
   };
   note?: string;
 }
 
-export type NutritionResponse = ApiResponse<NutritionRecommendation[]>;
+export type NutritionResponse =
+  | {
+      success: true;
+      fallback: boolean;
+      recommendations: NutritionRecommendation[];
+      data: NutritionRecommendation[];
+    }
+  | {
+      success: false;
+      error: string;
+      fallback?: boolean;
+      recommendations?: never;
+      data?: never;
+    };
 
 /** Input for chat endpoint */
 export interface ChatInput {
@@ -85,7 +111,13 @@ export interface ChatResponse {
   fallback?: boolean;
 }
 
-export type ChatApiResponse = ApiResponse<ChatResponse>;
+export interface ChatApiResponse {
+  success: boolean;
+  reply?: string;
+  data?: ChatResponse;
+  fallback?: boolean;
+  error?: string;
+}
 
 export interface HunterStats {
   strength: number;     // 0 - 100

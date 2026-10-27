@@ -1,18 +1,18 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation, NavigationTab } from './BottomNavigation';
+import { useThemedStyles } from '../lib/AppearanceContext';
 
 export function PlaceholderScreen({ active, title }: { active: NavigationTab; title: string }) {
+  const themedStyles = useThemedStyles(styles);
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
+    <View style={themedStyles.root}>
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
-          <Text style={styles.system}>ARISE // SYSTEM ONLINE</Text>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.message}>This module is ready for the next system update.</Text>
+        <View style={themedStyles.content}>
+          <Text style={themedStyles.system}>ARISE // SYSTEM ONLINE</Text>
+          <Text style={themedStyles.title}>{title}</Text>
+          <Text style={themedStyles.message}>This module is ready for the next system update.</Text>
         </View>
         <BottomNavigation active={active} />
       </SafeAreaView>

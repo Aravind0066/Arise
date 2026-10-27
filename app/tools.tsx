@@ -1,18 +1,22 @@
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  ImageBackground,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation } from '../components/BottomNavigation';
+import WorkoutScreen from '../components/WorkoutScreen';
+import NutritionContent from '../components/NutritionContent';
 import {
   getHunterProfile,
   getHunterStats,
@@ -31,17 +35,32 @@ import {
   ScreenTimeRecord,
   WorkoutLog,
 } from '../lib/hunterTypes';
-import { WORKOUT_ROUTINES } from '../lib/workoutEngine';
+import { setChatDraft, useChatDraft } from '../lib/chatDraftStore';
 
 export default function ToolsScreen() {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
   const router = useRouter();
-  const [activeTool, setActiveTool] = useState<'workout' | 'study' | 'journal' | 'screen'>('workout');
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const { width: windowWidth } = useWindowDimensions();
+  const [activeTool, setActiveTool] = useState<'workout' | 'nutrition' | 'home' | 'pomo' | 'ascend'>('home');
   const [profile, setProfile] = useState<HunterProfile | null>(null);
   const [stats, setStats] = useState<HunterStats | null>(null);
   const [notice, setNotice] = useState('');
+  const chatSearchDraft = useChatDraft();
+  const chatOpenedRef = useRef(false);
+  const homeColumns = windowWidth >= 960 ? 4 : windowWidth >= 760 ? 3 : windowWidth < 360 ? 1 : 2;
+  const homeGridMaxWidth = homeColumns === 4 ? 1060 : homeColumns === 3 ? 800 : homeColumns === 2 ? 540 : 280;
+  const homeGridWidth = Math.min(Math.max(0, windowWidth - 32), homeGridMaxWidth);
+  const homeCardWidth = Math.min(250, (homeGridWidth - 14 * (homeColumns - 1)) / homeColumns);
+
+  useEffect(() => {
+    if (params.tab === 'workout' || params.tab === 'nutrition' || params.tab === 'home' || params.tab === 'pomo' || params.tab === 'ascend') {
+      setActiveTool(params.tab);
+    }
+  }, [params.tab]);
 
   // 1. WORKOUT STATE
-  const [selectedRoutineId, setSelectedRoutineId] = useState(WORKOUT_ROUTINES[0].id);
   const [customExercise, setCustomExercise] = useState('Dumbbell Bench Press');
   const [sets, setSets] = useState('4');
   const [reps, setReps] = useState('10');
@@ -87,9 +106,20 @@ export default function ToolsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      chatOpenedRef.current = false;
       loadData();
     }, [loadData])
   );
+
+  const submitSearch = () => {
+    if (!chatSearchDraft.trim() || chatOpenedRef.current) return;
+    chatOpenedRef.current = true;
+    try {
+      router.push('/chat');
+    } catch {
+      chatOpenedRef.current = false;
+    }
+  };
 
   // POMODORO TIMER ENGINE
   useEffect(() => {
@@ -149,16 +179,6 @@ export default function ToolsScreen() {
     } catch (err: any) {
       Alert.alert('Study Error', err.message || 'Failed to complete session');
     }
-  };
-
-  // LAUNCH GUIDED WORKOUT
-  const handleLaunchGuidedWorkout = () => {
-    router.push({
-      pathname: '/workout',
-      params: {
-        routineId: selectedRoutineId,
-      },
-    });
   };
 
   // SUBMIT CUSTOM WORKOUT LOG
@@ -229,31 +249,31 @@ export default function ToolsScreen() {
   };
 
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
+    <View style={themedStyles.root}>
+      <SafeAreaView style={themedStyles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={themedStyles.content}>
           {/* Header */}
-          <View style={styles.header}>
-            <Text style={styles.systemTag}>SYSTEM // UTILITY CORE</Text>
-            <Text style={styles.pageTitle}>HUNTER ACTIVITY MODULES</Text>
+          <View style={themedStyles.header}>
+            <Text style={themedStyles.systemTag}>SYSTEM // UTILITY CORE</Text>
+            <Text style={themedStyles.pageTitle}>HUNTER ACTIVITY MODULES</Text>
           </View>
 
           {/* Module Selector Tabs */}
-          <View style={styles.tabsRow}>
+          <View style={themedStyles.tabsRow}>
             {[
-              { id: 'workout', label: 'WORKOUT', icon: '⚔️' },
-              { id: 'study', label: 'POMODORO', icon: '⏱️' },
-              { id: 'journal', label: 'JOURNAL', icon: '📝' },
-              { id: 'screen', label: 'DISCIPLINE', icon: '🛡️' },
+              { id: 'workout', label: 'Workout', icon: '⚔️' },
+              { id: 'nutrition', label: 'Nutri', icon: '🥗' },
+              { id: 'home', label: 'Home', icon: '⌂' },
+              { id: 'pomo', label: 'Pomo', icon: '⏱️' },
+              { id: 'ascend', label: 'Ascend', icon: '⛰️' },
             ].map((tab) => (
               <Pressable
                 key={tab.id}
-                style={[styles.toolTab, activeTool === tab.id && styles.toolTabActive]}
-                onPress={() => setActiveTool(tab.id as any)}
+                style={[themedStyles.toolTab, activeTool === tab.id && themedStyles.toolTabActive]}
+                onPress={() => setActiveTool(tab.id as typeof activeTool)}
               >
-                <Text style={styles.toolTabIcon}>{tab.icon}</Text>
-                <Text style={[styles.toolTabLabel, activeTool === tab.id && styles.toolTabLabelActive]}>
+                <Text style={themedStyles.toolTabIcon}>{tab.icon}</Text>
+                <Text style={[themedStyles.toolTabLabel, activeTool === tab.id && themedStyles.toolTabLabelActive]}>
                   {tab.label}
                 </Text>
               </Pressable>
@@ -261,127 +281,154 @@ export default function ToolsScreen() {
           </View>
 
           {notice ? (
-            <View style={styles.noticeBox}>
-              <Text style={styles.noticeText}>⚡ {notice}</Text>
+            <View style={themedStyles.noticeBox}>
+              <Text style={themedStyles.noticeText}>⚡ {notice}</Text>
             </View>
           ) : null}
+
+          {activeTool === 'home' && (
+            <View style={themedStyles.homeSection}>
+              <View style={[themedStyles.homeGrid, { maxWidth: homeGridMaxWidth }]}>
+                <Pressable style={[themedStyles.homeCard, { width: homeCardWidth }]} onPress={() => setActiveTool('workout')}>
+                  <ImageBackground source={require('../assets/images/tools/workout.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
+                    <View style={themedStyles.homeCardShade} />
+                    <View style={themedStyles.homeCardCopy}>
+                      <Text style={themedStyles.homeCardEyebrow}>STRENGTH // RAID</Text>
+                      <Text style={themedStyles.homeCardTitle}>Workout</Text>
+                    </View>
+                  </ImageBackground>
+                </Pressable>
+                <Pressable style={[themedStyles.homeCard, { width: homeCardWidth }]} onPress={() => setActiveTool('pomo')}>
+                  <ImageBackground source={require('../assets/images/tools/pomodoro.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
+                    <View style={themedStyles.homeCardShade} />
+                    <View style={themedStyles.homeCardCopy}>
+                      <Text style={themedStyles.homeCardEyebrow}>FOCUS // PROTOCOL</Text>
+                      <Text style={themedStyles.homeCardTitle}>Pomodoro</Text>
+                    </View>
+                  </ImageBackground>
+                </Pressable>
+                <Pressable style={[themedStyles.homeCard, { width: homeCardWidth }]} onPress={() => setActiveTool('nutrition')}>
+                  <ImageBackground source={require('../assets/images/tools/nutrition.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
+                    <View style={themedStyles.homeCardShade} />
+                    <View style={themedStyles.homeCardCopy}>
+                      <Text style={themedStyles.homeCardEyebrow}>RECOVERY // FUEL</Text>
+                      <Text style={themedStyles.homeCardTitle}>Nutrition</Text>
+                    </View>
+                  </ImageBackground>
+                </Pressable>
+                <Pressable style={[themedStyles.homeCard, { width: homeCardWidth }]} onPress={() => setActiveTool('ascend')}>
+                  <ImageBackground source={require('../assets/images/tools/ascend.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
+                    <View style={themedStyles.homeCardShade} />
+                    <View style={themedStyles.homeCardCopy}>
+                      <Text style={themedStyles.homeCardEyebrow}>JOURNAL // DISCIPLINE</Text>
+                      <Text style={themedStyles.homeCardTitle}>Ascend</Text>
+                    </View>
+                  </ImageBackground>
+                </Pressable>
+              </View>
+
+              <View style={themedStyles.searchSection}>
+                <View style={themedStyles.searchBar}>
+                  <Text style={themedStyles.searchIcon}>⌕</Text>
+                  <TextInput
+                    value={chatSearchDraft}
+                    onChangeText={setChatDraft}
+                    onSubmitEditing={submitSearch}
+                    placeholder="Ask anything or search…"
+                    placeholderTextColor={theme.textSecondary}
+                    style={themedStyles.searchInput}
+                    maxLength={2000}
+                    returnKeyType="search"
+                    accessibilityLabel="Ask Hunter AI or search"
+                  />
+                  <Pressable
+                    style={[themedStyles.searchAction, !chatSearchDraft.trim() && themedStyles.searchActionDisabled]}
+                    onPress={submitSearch}
+                    disabled={!chatSearchDraft.trim() || chatOpenedRef.current}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send question to Hunter AI"
+                  >
+                    <Text style={themedStyles.searchActionText}>➤</Text>
+                  </Pressable>
+                </View>
+                <Text style={themedStyles.searchHint}>Quests, workouts, nutrition, study plans…</Text>
+                <View style={themedStyles.searchDivider} />
+              </View>
+            </View>
+          )}
 
           {/* ========================================================= */}
           {/* 1. WORKOUT MODULE */}
           {/* ========================================================= */}
           {activeTool === 'workout' && (
-            <View style={styles.moduleSection}>
-              {/* Guided Workout Launcher Card */}
-              <View style={styles.card}>
-                <View style={styles.cardHeaderRow}>
-                  <Text style={styles.cardTitle}>DUNGEON RAID // GUIDED WORKOUT</Text>
-                  <View style={styles.activePill}>
-                    <Text style={styles.activePillText}>INTERACTIVE</Text>
-                  </View>
-                </View>
-                <Text style={styles.cardSub}>
-                  Select a dungeon protocol to launch the step-by-step guided movement flow.
-                </Text>
-
-                <View style={styles.routineSelectorList}>
-                  {WORKOUT_ROUTINES.map((r) => {
-                    const isSelected = selectedRoutineId === r.id;
-                    return (
-                      <Pressable
-                        key={r.id}
-                        style={[styles.routineItem, isSelected && styles.routineItemActive]}
-                        onPress={() => setSelectedRoutineId(r.id)}
-                      >
-                        <View style={styles.routineItemHeader}>
-                          <Text style={[styles.routineTitle, isSelected && styles.routineTitleActive]}>
-                            {r.title}
-                          </Text>
-                          <Text style={styles.routineDuration}>{r.durationMinutes} MIN</Text>
-                        </View>
-                        <Text style={styles.routineGoal}>{r.goal}</Text>
-                        <View style={styles.routineMetaRow}>
-                          <Text style={styles.routineMetaText}>
-                            {r.exercises.length} Exercises · {r.difficulty} · +{r.xpReward} XP
-                          </Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-
-                <Pressable
-                  style={styles.primaryActionBtn}
-                  onPress={handleLaunchGuidedWorkout}
-                >
-                  <Text style={styles.primaryActionBtnText}>LAUNCH GUIDED WORKOUT RAID ➔</Text>
-                </Pressable>
-              </View>
+            <View style={themedStyles.moduleSection}>
+              <WorkoutScreen embedded />
 
               {/* Custom Lifting Log Card */}
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>CUSTOM TRAINING LOG</Text>
-                <Text style={styles.cardSub}>
+              <View style={themedStyles.card}>
+                <Text style={themedStyles.cardTitle}>CUSTOM TRAINING LOG</Text>
+                <Text style={themedStyles.cardSub}>
                   Record sets, reps, and weights from an off-system training session.
                 </Text>
 
-                <Text style={styles.inputLabel}>EXERCISE NAME</Text>
+                <Text style={themedStyles.inputLabel}>EXERCISE NAME</Text>
                 <TextInput
                   value={customExercise}
                   onChangeText={setCustomExercise}
                   placeholder="e.g. Incline Dumbbell Press"
-                  placeholderTextColor="#3e6382"
-                  style={styles.inputField}
+                  placeholderTextColor={theme.textSecondary}
+                  style={themedStyles.inputField}
                 />
 
-                <View style={styles.threeColRow}>
-                  <View style={styles.col}>
-                    <Text style={styles.inputLabel}>SETS</Text>
+                <View style={themedStyles.threeColRow}>
+                  <View style={themedStyles.col}>
+                    <Text style={themedStyles.inputLabel}>SETS</Text>
                     <TextInput
                       value={sets}
                       onChangeText={setSets}
                       keyboardType="number-pad"
-                      style={styles.inputField}
+                      style={themedStyles.inputField}
                     />
                   </View>
-                  <View style={styles.col}>
-                    <Text style={styles.inputLabel}>REPS</Text>
+                  <View style={themedStyles.col}>
+                    <Text style={themedStyles.inputLabel}>REPS</Text>
                     <TextInput
                       value={reps}
                       onChangeText={setReps}
                       keyboardType="number-pad"
-                      style={styles.inputField}
+                      style={themedStyles.inputField}
                     />
                   </View>
-                  <View style={styles.col}>
-                    <Text style={styles.inputLabel}>KG</Text>
+                  <View style={themedStyles.col}>
+                    <Text style={themedStyles.inputLabel}>KG</Text>
                     <TextInput
                       value={weight}
                       onChangeText={setWeight}
                       keyboardType="number-pad"
-                      style={styles.inputField}
+                      style={themedStyles.inputField}
                     />
                   </View>
                 </View>
 
-                <Pressable style={styles.secondaryActionBtn} onPress={handleLogCustomWorkout}>
-                  <Text style={styles.secondaryActionBtnText}>RECORD SET & GAIN XP (+50 XP)</Text>
+                <Pressable style={themedStyles.secondaryActionBtn} onPress={handleLogCustomWorkout}>
+                  <Text style={themedStyles.secondaryActionBtnText}>RECORD SET & GAIN XP (+50 XP)</Text>
                 </Pressable>
               </View>
 
               {/* Recent Workout Logs */}
               {workoutLogs.length > 0 && (
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>RECENT WORKOUT RECORDS</Text>
-                  <View style={styles.recentLogsList}>
+                <View style={themedStyles.card}>
+                  <Text style={themedStyles.cardTitle}>RECENT WORKOUT RECORDS</Text>
+                  <View style={themedStyles.recentLogsList}>
                     {workoutLogs.map((log) => (
-                      <View key={log._id} style={styles.recentLogItem}>
+                      <View key={log._id} style={themedStyles.recentLogItem}>
                         <View>
-                          <Text style={styles.recentLogTitle}>{log.workoutName}</Text>
-                          <Text style={styles.recentLogSub}>
+                          <Text style={themedStyles.recentLogTitle}>{log.workoutName}</Text>
+                          <Text style={themedStyles.recentLogSub}>
                             {log.exercisesCompleted} Movements · {Math.round(log.durationSeconds / 60)} min
                           </Text>
                         </View>
-                        <Text style={styles.recentLogXp}>+50 XP</Text>
+                        <Text style={themedStyles.recentLogXp}>+50 XP</Text>
                       </View>
                     ))}
                   </View>
@@ -390,26 +437,28 @@ export default function ToolsScreen() {
             </View>
           )}
 
+          {activeTool === 'nutrition' && <NutritionContent embedded />}
+
           {/* ========================================================= */}
           {/* 2. POMODORO / STUDY MODULE */}
           {/* ========================================================= */}
-          {activeTool === 'study' && (
-            <View style={styles.moduleSection}>
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>SYSTEM // DEEP WORK POMODORO</Text>
-                <Text style={styles.cardSub}>
+          {activeTool === 'pomo' && (
+            <View style={themedStyles.moduleSection}>
+              <View style={themedStyles.card}>
+                <Text style={themedStyles.cardTitle}>SYSTEM // DEEP WORK POMODORO</Text>
+                <Text style={themedStyles.cardSub}>
                   Lock in with zero distraction. The system awards Knowledge & Discipline XP upon completion.
                 </Text>
 
                 {/* Mode Selector */}
-                <View style={styles.pomodoroModesRow}>
+                <View style={themedStyles.pomodoroModesRow}>
                   {([25, 50, 90] as const).map((m) => (
                     <Pressable
                       key={m}
-                      style={[styles.pomoModeChip, studyMode === m && styles.pomoModeChipActive]}
+                      style={[themedStyles.pomoModeChip, studyMode === m && themedStyles.pomoModeChipActive]}
                       onPress={() => changeStudyMode(m)}
                     >
-                      <Text style={[styles.pomoModeText, studyMode === m && styles.pomoModeTextActive]}>
+                      <Text style={[themedStyles.pomoModeText, studyMode === m && themedStyles.pomoModeTextActive]}>
                         {m} MIN {m === 25 ? '(SPRINT)' : m === 50 ? '(DEEP)' : '(HYPER)'}
                       </Text>
                     </Pressable>
@@ -417,43 +466,43 @@ export default function ToolsScreen() {
                 </View>
 
                 {/* Timer Display */}
-                <View style={styles.timerDisplayContainer}>
-                  <Text style={styles.timerLargeText}>{formatTimer(secondsRemaining)}</Text>
-                  <Text style={styles.timerStateText}>
+                <View style={themedStyles.timerDisplayContainer}>
+                  <Text style={themedStyles.timerLargeText}>{formatTimer(secondsRemaining)}</Text>
+                  <Text style={themedStyles.timerStateText}>
                     {timerRunning ? '⚡ DEEP FOCUS ACTIVE' : '❚❚ FOCUS STANDBY'}
                   </Text>
                 </View>
 
                 {/* Study Topic Input */}
-                <Text style={styles.inputLabel}>STUDY DOMAIN / CORE TOPIC</Text>
+                <Text style={themedStyles.inputLabel}>STUDY DOMAIN / CORE TOPIC</Text>
                 <TextInput
                   value={studyTopic}
                   onChangeText={setStudyTopic}
                   placeholder="e.g. Distributed Consensus, System Design"
-                  placeholderTextColor="#3e6382"
-                  style={styles.inputField}
+                  placeholderTextColor={theme.textSecondary}
+                  style={themedStyles.inputField}
                 />
 
                 {/* Timer Controls */}
-                <View style={styles.timerControlsRow}>
+                <View style={themedStyles.timerControlsRow}>
                   <Pressable
-                    style={[styles.timerControlBtn, timerRunning ? styles.pauseBtn : styles.startBtn]}
+                    style={[themedStyles.timerControlBtn, timerRunning ? themedStyles.pauseBtn : themedStyles.startBtn]}
                     onPress={toggleTimer}
                   >
-                    <Text style={styles.timerControlBtnText}>
+                    <Text style={themedStyles.timerControlBtnText}>
                       {timerRunning ? '❚❚ PAUSE SESSION' : '▶ START SESSION'}
                     </Text>
                   </Pressable>
-                  <Pressable style={styles.resetBtn} onPress={resetTimer}>
-                    <Text style={styles.resetBtnText}>↺ RESET</Text>
+                  <Pressable style={themedStyles.resetBtn} onPress={resetTimer}>
+                    <Text style={themedStyles.resetBtnText}>↺ RESET</Text>
                   </Pressable>
                 </View>
 
                 <Pressable
-                  style={styles.finishEarlyBtn}
+                  style={themedStyles.finishEarlyBtn}
                   onPress={() => setShowStudySummaryModal(true)}
                 >
-                  <Text style={styles.finishEarlyBtnText}>VERIFY & FINISH BLOCK ➔</Text>
+                  <Text style={themedStyles.finishEarlyBtnText}>VERIFY & FINISH BLOCK ➔</Text>
                 </Pressable>
               </View>
             </View>
@@ -462,71 +511,71 @@ export default function ToolsScreen() {
           {/* ========================================================= */}
           {/* 3. JOURNAL MODULE */}
           {/* ========================================================= */}
-          {activeTool === 'journal' && (
-            <View style={styles.moduleSection}>
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>MIND MATRIX // 3-PROMPT JOURNAL</Text>
-                <Text style={styles.cardSub}>
+          {activeTool === 'ascend' && (
+            <View style={themedStyles.moduleSection}>
+              <View style={themedStyles.card}>
+                <Text style={themedStyles.cardTitle}>MIND MATRIX // 3-PROMPT JOURNAL</Text>
+                <Text style={themedStyles.cardSub}>
                   Confront the shadow self. Daily reflection recalibrates neural focus and grants Mindfulness XP.
                 </Text>
 
-                <Text style={styles.inputLabel}>1. WHAT WENT WELL TODAY? (VICTORY)</Text>
+                <Text style={themedStyles.inputLabel}>1. WHAT WENT WELL TODAY? (VICTORY)</Text>
                 <TextInput
                   value={wentWell}
                   onChangeText={setWentWell}
                   placeholder="e.g. Crushed morning workout and completed 2 coding modules"
-                  placeholderTextColor="#3e6382"
+                  placeholderTextColor={theme.textSecondary}
                   multiline
-                  style={styles.textAreaField}
+                  style={themedStyles.textAreaField}
                 />
 
-                <Text style={styles.inputLabel}>2. WHAT HELD YOU BACK? (FRICTION / WEAKNESS)</Text>
+                <Text style={themedStyles.inputLabel}>2. WHAT HELD YOU BACK? (FRICTION / WEAKNESS)</Text>
                 <TextInput
                   value={heldBack}
                   onChangeText={setHeldBack}
                   placeholder="e.g. Scrolled on phone for 20 mins after lunch"
-                  placeholderTextColor="#3e6382"
+                  placeholderTextColor={theme.textSecondary}
                   multiline
-                  style={styles.textAreaField}
+                  style={themedStyles.textAreaField}
                 />
 
-                <Text style={styles.inputLabel}>3. TOMORROW'S PRIME DIRECTIVE</Text>
+                <Text style={themedStyles.inputLabel}>3. TOMORROW'S PRIME DIRECTIVE</Text>
                 <TextInput
                   value={improveTomorrow}
                   onChangeText={setImproveTomorrow}
                   placeholder="e.g. No phone before 9am, lock in on DSA mock test"
-                  placeholderTextColor="#3e6382"
+                  placeholderTextColor={theme.textSecondary}
                   multiline
-                  style={styles.textAreaField}
+                  style={themedStyles.textAreaField}
                 />
 
-                <View style={styles.sliderRow}>
-                  <View style={styles.col}>
-                    <Text style={styles.inputLabel}>MOOD: {mood}/10</Text>
-                    <View style={styles.scorePills}>
+                <View style={themedStyles.sliderRow}>
+                  <View style={themedStyles.col}>
+                    <Text style={themedStyles.inputLabel}>MOOD: {mood}/10</Text>
+                    <View style={themedStyles.scorePills}>
                       {[4, 6, 8, 10].map((v) => (
                         <Pressable
                           key={v}
-                          style={[styles.scorePill, mood === v && styles.scorePillActive]}
+                          style={[themedStyles.scorePill, mood === v && themedStyles.scorePillActive]}
                           onPress={() => setMood(v)}
                         >
-                          <Text style={[styles.scorePillText, mood === v && styles.scorePillTextActive]}>
+                          <Text style={[themedStyles.scorePillText, mood === v && themedStyles.scorePillTextActive]}>
                             {v}
                           </Text>
                         </Pressable>
                       ))}
                     </View>
                   </View>
-                  <View style={styles.col}>
-                    <Text style={styles.inputLabel}>ENERGY: {energy}/10</Text>
-                    <View style={styles.scorePills}>
+                  <View style={themedStyles.col}>
+                    <Text style={themedStyles.inputLabel}>ENERGY: {energy}/10</Text>
+                    <View style={themedStyles.scorePills}>
                       {[4, 6, 8, 10].map((v) => (
                         <Pressable
                           key={v}
-                          style={[styles.scorePill, energy === v && styles.scorePillActive]}
+                          style={[themedStyles.scorePill, energy === v && themedStyles.scorePillActive]}
                           onPress={() => setEnergy(v)}
                         >
-                          <Text style={[styles.scorePillText, energy === v && styles.scorePillTextActive]}>
+                          <Text style={[themedStyles.scorePillText, energy === v && themedStyles.scorePillTextActive]}>
                             {v}
                           </Text>
                         </Pressable>
@@ -535,20 +584,20 @@ export default function ToolsScreen() {
                   </View>
                 </View>
 
-                <Pressable style={styles.primaryActionBtn} onPress={handleLogJournal}>
-                  <Text style={styles.primaryActionBtnText}>SAVE REFLECTION & CLAIM XP (+35 XP)</Text>
+                <Pressable style={themedStyles.primaryActionBtn} onPress={handleLogJournal}>
+                  <Text style={themedStyles.primaryActionBtnText}>SAVE REFLECTION & CLAIM XP (+35 XP)</Text>
                 </Pressable>
               </View>
 
               {journalLogs.length > 0 && (
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>RECENT REFLECTIONS</Text>
+                <View style={themedStyles.card}>
+                  <Text style={themedStyles.cardTitle}>RECENT REFLECTIONS</Text>
                   {journalLogs.map((j) => (
-                    <View key={j._id} style={styles.recentJournalItem}>
-                      <Text style={styles.recentJournalDate}>
+                    <View key={j._id} style={themedStyles.recentJournalItem}>
+                      <Text style={themedStyles.recentJournalDate}>
                         {new Date(j.createdAt).toLocaleDateString()} · Mood {j.moodRating}/10
                       </Text>
-                      <Text style={styles.recentJournalText}>“{j.wentWell}”</Text>
+                      <Text style={themedStyles.recentJournalText}>“{j.wentWell}”</Text>
                     </View>
                   ))}
                 </View>
@@ -559,39 +608,42 @@ export default function ToolsScreen() {
           {/* ========================================================= */}
           {/* 4. DISCIPLINE / SCREEN TIME MODULE */}
           {/* ========================================================= */}
-          {activeTool === 'screen' && (
-            <View style={styles.moduleSection}>
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>DISCIPLINE DEFENSE // SCREEN TIME MATRIX</Text>
-                <Text style={styles.cardSub}>
+          {activeTool === 'ascend' && (
+            <View style={themedStyles.moduleSection}>
+              <View style={themedStyles.card}>
+                <Text style={themedStyles.cardTitle}>DISCIPLINE DEFENSE // SCREEN TIME MATRIX</Text>
+                <Text style={themedStyles.cardSub}>
                   Measure intentional focus versus algorithmic capture. Overcome the doom scroll.
+                </Text>
+                <Text style={themedStyles.developmentNote}>
+                  Manual estimates only — HunterOS does not read device screen-time or unlock data.
                 </Text>
 
                 {/* Metrics Readout */}
-                <View style={styles.screenMetricsRow}>
-                  <View style={styles.screenMetricBox}>
-                    <Text style={styles.screenMetricLabel}>DEVICE UNLOCKS</Text>
-                    <Text style={styles.screenMetricVal}>{screenData.unlocks}</Text>
+                <View style={themedStyles.screenMetricsRow}>
+                  <View style={themedStyles.screenMetricBox}>
+                    <Text style={themedStyles.screenMetricLabel}>DEVICE UNLOCKS</Text>
+                    <Text style={themedStyles.screenMetricVal}>{screenData.unlocks}</Text>
                   </View>
-                  <View style={styles.screenMetricBox}>
-                    <Text style={styles.screenMetricLabel}>REELS / SHORTS</Text>
-                    <Text style={[styles.screenMetricVal, { color: screenData.reelsMinutes > 20 ? '#ff5376' : '#38ef7d' }]}>
+                  <View style={themedStyles.screenMetricBox}>
+                    <Text style={themedStyles.screenMetricLabel}>REELS / SHORTS</Text>
+                    <Text style={[themedStyles.screenMetricVal, { color: screenData.reelsMinutes > 20 ? theme.error : theme.success }]}>
                       {screenData.reelsMinutes}m
                     </Text>
                   </View>
-                  <View style={styles.screenMetricBox}>
-                    <Text style={styles.screenMetricLabel}>PRODUCTIVE</Text>
-                    <Text style={[styles.screenMetricVal, { color: '#00f3ff' }]}>
+                  <View style={themedStyles.screenMetricBox}>
+                    <Text style={themedStyles.screenMetricLabel}>PRODUCTIVE</Text>
+                    <Text style={[themedStyles.screenMetricVal, { color: theme.accent }]}>
                       {screenData.productiveMinutes}m
                     </Text>
                   </View>
                 </View>
 
                 {/* Adjusters */}
-                <Text style={styles.inputLabel}>UPDATE SHORT-FORM CONSUMPTION (MINUTES)</Text>
-                <View style={styles.reelAdjustRow}>
+                <Text style={themedStyles.inputLabel}>UPDATE SHORT-FORM CONSUMPTION (MINUTES)</Text>
+                <View style={themedStyles.reelAdjustRow}>
                   <Pressable
-                    style={styles.adjustBtn}
+                    style={themedStyles.adjustBtn}
                     onPress={() =>
                       setScreenData((prev) => ({
                         ...prev,
@@ -599,11 +651,11 @@ export default function ToolsScreen() {
                       }))
                     }
                   >
-                    <Text style={styles.adjustBtnText}>−5m</Text>
+                    <Text style={themedStyles.adjustBtnText}>−5m</Text>
                   </Pressable>
-                  <Text style={styles.largeReelDisplay}>{screenData.reelsMinutes} MIN</Text>
+                  <Text style={themedStyles.largeReelDisplay}>{screenData.reelsMinutes} MIN</Text>
                   <Pressable
-                    style={styles.adjustBtn}
+                    style={themedStyles.adjustBtn}
                     onPress={() =>
                       setScreenData((prev) => ({
                         ...prev,
@@ -611,12 +663,12 @@ export default function ToolsScreen() {
                       }))
                     }
                   >
-                    <Text style={styles.adjustBtnText}>+5m</Text>
+                    <Text style={themedStyles.adjustBtnText}>+5m</Text>
                   </Pressable>
                 </View>
 
-                <Pressable style={styles.primaryActionBtn} onPress={handleLogScreenVictory}>
-                  <Text style={styles.primaryActionBtnText}>LOG DISCIPLINE CHECKPOINT (+40 XP)</Text>
+                <Pressable style={themedStyles.primaryActionBtn} onPress={handleLogScreenVictory}>
+                  <Text style={themedStyles.primaryActionBtnText}>LOG DISCIPLINE CHECKPOINT (+40 XP)</Text>
                 </Pressable>
               </View>
             </View>
@@ -625,32 +677,32 @@ export default function ToolsScreen() {
 
         {/* Pomodoro Completion Modal */}
         <Modal visible={showStudySummaryModal} transparent animationType="fade">
-          <View style={styles.modalOverlay}>
-            <View style={styles.summaryModalCard}>
-              <Text style={styles.summaryModalTag}>SYSTEM // POMODORO COMPLETE</Text>
-              <Text style={styles.summaryModalTitle}>DEEP FOCUS REWARD</Text>
-              <Text style={styles.summaryModalDesc}>
+          <View style={themedStyles.modalOverlay}>
+            <View style={themedStyles.summaryModalCard}>
+              <Text style={themedStyles.summaryModalTag}>SYSTEM // POMODORO COMPLETE</Text>
+              <Text style={themedStyles.summaryModalTitle}>DEEP FOCUS REWARD</Text>
+              <Text style={themedStyles.summaryModalDesc}>
                 Session successfully logged for “{studyTopic}”. Ready to accredit Knowledge XP to your hunter dossier.
               </Text>
 
-              <View style={styles.summaryModalStats}>
-                <Text style={styles.summaryModalStatsText}>
+              <View style={themedStyles.summaryModalStats}>
+                <Text style={themedStyles.summaryModalStatsText}>
                   +{studyMode >= 50 ? 80 : 50} XP · +4 KNOWLEDGE · +2 DISCIPLINE
                 </Text>
               </View>
 
-              <View style={styles.modalBtns}>
+              <View style={themedStyles.modalBtns}>
                 <Pressable
-                  style={styles.cancelBtn}
+                  style={themedStyles.cancelBtn}
                   onPress={() => setShowStudySummaryModal(false)}
                 >
-                  <Text style={styles.cancelBtnText}>DISMISS</Text>
+                  <Text style={themedStyles.cancelBtnText}>DISMISS</Text>
                 </Pressable>
                 <Pressable
-                  style={styles.confirmBtn}
+                  style={themedStyles.confirmBtn}
                   onPress={handleCompletePomodoro}
                 >
-                  <Text style={styles.confirmBtnText}>ACCREDIT XP ➔</Text>
+                  <Text style={themedStyles.confirmBtnText}>ACCREDIT XP ➔</Text>
                 </Pressable>
               </View>
             </View>
@@ -691,6 +743,134 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '900',
     letterSpacing: 0.5,
+  },
+  searchSection: {
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  searchBar: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#081727',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1b3b58',
+    paddingLeft: 14,
+    paddingRight: 7,
+    shadowColor: '#00d9e8',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  searchIcon: {
+    color: '#00dce8',
+    fontSize: 27,
+    lineHeight: 30,
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#e3f1fc',
+    fontSize: 15,
+    paddingVertical: 12,
+    outlineStyle: 'none',
+  } as any,
+  searchAction: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#00dce8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  searchActionDisabled: {
+    opacity: 0.35,
+  },
+  searchActionText: {
+    color: '#03111b',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  searchHint: {
+    color: '#526b82',
+    fontSize: 10,
+    letterSpacing: 0.2,
+    marginTop: 8,
+    marginLeft: 12,
+  },
+  searchDivider: {
+    height: 1,
+    marginTop: 13,
+    backgroundColor: '#102438',
+    opacity: 0.9,
+  },
+  homeSection: {
+    gap: 2,
+  },
+  homeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    width: '100%',
+    maxWidth: 1060,
+    alignSelf: 'center',
+    justifyContent: 'center',
+    columnGap: 14,
+    rowGap: 14,
+  },
+  homeCard: {
+    width: 250,
+    aspectRatio: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#071626',
+    borderWidth: 1,
+    borderColor: '#1b3a52',
+    shadowColor: '#000000',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  homeCardImage: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  homeCardImageStyle: {
+    borderRadius: 13,
+    resizeMode: 'cover',
+  },
+  homeCardShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(2, 8, 14, 0.2)',
+  },
+  homeCardCopy: {
+    backgroundColor: 'rgba(2, 8, 14, 0.7)',
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0, 243, 255, 0.28)',
+  },
+  homeCardEyebrow: {
+    color: '#7edce4',
+    fontSize: 7,
+    fontWeight: '900',
+    letterSpacing: 0.9,
+    marginBottom: 3,
+  },
+  homeCardTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  developmentNote: {
+    color: '#8093a5',
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: -6,
+    marginBottom: 12,
   },
   tabsRow: {
     flexDirection: 'row',

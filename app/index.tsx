@@ -1,3 +1,4 @@
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
 import React, { useCallback, useState } from 'react';
 import {
   Pressable,
@@ -8,7 +9,6 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation } from '../components/BottomNavigation';
 import { MorningBriefingModal } from '../components/MorningBriefingModal';
 import { OnboardingModal } from '../components/OnboardingModal';
@@ -18,13 +18,17 @@ import {
   getHunterProfile,
   getHunterQuests,
   getHunterStats,
+  getWorkoutLogs,
   saveHunterProfile,
   saveHunterStats,
   XP_PER_LEVEL,
 } from '../lib/hunterStorage';
-import { HunterProfile, HunterQuest, HunterStats } from '../lib/hunterTypes';
+import { CompletedLog, HunterProfile, HunterQuest, HunterStats, WorkoutLog } from '../lib/hunterTypes';
+import { getWorkoutActivity } from '../lib/workoutActivity';
 
 export default function HomeScreen() {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
   const router = useRouter();
   const [profile, setProfile] = useState<HunterProfile | null>(null);
   const [stats, setStats] = useState<HunterStats>({
@@ -35,7 +39,8 @@ export default function HomeScreen() {
     mindfulness: 35,
   });
   const [quests, setQuests] = useState<HunterQuest[]>([]);
-  const [historyCount, setHistoryCount] = useState(0);
+  const [history, setHistory] = useState<CompletedLog[]>([]);
+  const [workoutLogs, setWorkoutLogs] = useState<WorkoutLog[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showMorningBriefing, setShowMorningBriefing] = useState(false);
   const [systemNotification, setSystemNotification] = useState('');
@@ -43,19 +48,21 @@ export default function HomeScreen() {
   const loadData = useCallback(async () => {
     const p = await getHunterProfile();
     const s = await getHunterStats();
-    const q = await getHunterQuests();
-    const h = await getHunterHistory();
 
     if (!p || !p.onboarded) {
       setShowOnboarding(true);
       return;
     }
 
+    const q = await getHunterQuests();
+    const h = await getHunterHistory();
+    const w = await getWorkoutLogs();
     setShowOnboarding(false);
     setProfile(p);
     setStats(s);
     setQuests(q);
-    setHistoryCount(h.length);
+    setHistory(h);
+    setWorkoutLogs(w);
   }, []);
 
   useFocusEffect(
@@ -69,8 +76,10 @@ export default function HomeScreen() {
     setStats(newStats);
     const q = await getHunterQuests();
     const h = await getHunterHistory();
+    const w = await getWorkoutLogs();
     setQuests(q);
-    setHistoryCount(h.length);
+    setHistory(h);
+    setWorkoutLogs(w);
     setShowOnboarding(false);
     setSystemNotification(`HUNTER AWAKENED: ${newProfile.name} // [ ${newProfile.title} ]`);
     setTimeout(() => setSystemNotification(''), 5000);
@@ -101,14 +110,15 @@ export default function HomeScreen() {
   const handleActionableQuestPress = (quest: HunterQuest) => {
     if (quest.category.toUpperCase() === 'FITNESS') {
       router.push({
-        pathname: '/workout',
+        pathname: '/tools',
         params: {
+          tab: 'workout',
           questId: quest._id,
           workoutTitle: quest.title,
         },
       });
     } else if (quest.category.toUpperCase() === 'STUDY') {
-      router.push('/tools');
+      router.push({ pathname: '/tools', params: { tab: 'pomo' } });
     } else {
       router.push('/quests');
     }
@@ -127,6 +137,7 @@ export default function HomeScreen() {
 
   // Single featured actionable quest
   const featuredQuest = activeQuests[0] || null;
+  const workoutActivity = getWorkoutActivity(workoutLogs);
 
   // Next level unlock description
   const nextLevel = currentLevel + 1;
@@ -138,99 +149,98 @@ export default function HomeScreen() {
       : `Level ${nextLevel}: Advanced Workout Routines & Stat Surge`;
 
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
+    <View style={themedStyles.root}>
+      <SafeAreaView style={themedStyles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={themedStyles.content}>
           {/* Top HUD Header */}
-          <View style={styles.topBar}>
+          <View style={themedStyles.topBar}>
             <View>
-              <Text style={styles.systemBrand}>SYSTEM // HUNTER-OS</Text>
-              <Text style={styles.systemSub}>SOLO LEVELING NEURAL HUD</Text>
+              <Text style={themedStyles.systemBrand}>HOME // HUNTER-OS</Text>
+              <Text style={themedStyles.systemSub}>DAILY PROGRESSION DASHBOARD</Text>
             </View>
-            <View style={styles.statusGroup}>
-              <View style={styles.liveBadge}>
-                <Text style={styles.liveDot}>●</Text>
-                <Text style={styles.liveText}>SYSTEM ONLINE</Text>
+            <View style={themedStyles.statusGroup}>
+              <View style={themedStyles.liveBadge}>
+                <Text style={themedStyles.liveDot}>●</Text>
+                <Text style={themedStyles.liveText}>SYSTEM ONLINE</Text>
               </View>
             </View>
           </View>
 
           {/* System Notification banner */}
           {systemNotification ? (
-            <View style={styles.notifBanner}>
-              <Text style={styles.notifText}>⚡ {systemNotification}</Text>
+            <View style={themedStyles.notifBanner}>
+              <Text style={themedStyles.notifText}>⚡ {systemNotification}</Text>
             </View>
           ) : null}
 
           {/* Hunter Identity Card */}
-          <View style={styles.identityCard}>
-            <View style={styles.identityHeader}>
-              <View style={styles.rankBadge}>
-                <Text style={styles.rankText}>{profile?.rank || 'E-RANK'}</Text>
+          <View style={themedStyles.identityCard}>
+            <View style={themedStyles.identityHeader}>
+              <View style={themedStyles.rankBadge}>
+                <Text style={themedStyles.rankText}>{profile?.rank || 'E-RANK'}</Text>
               </View>
-              <Text style={styles.hunterTitle}>[ {profile?.title || 'THE AWAKENED'} ]</Text>
+              <Text style={themedStyles.hunterTitle}>[ {profile?.title || 'THE AWAKENED'} ]</Text>
             </View>
 
-            <View style={styles.identityBody}>
+            <View style={themedStyles.identityBody}>
               <View>
-                <Text style={styles.hunterName}>{profile?.name || 'Hunter'}</Text>
-                <Text style={styles.hunterBio}>
+                <Text style={themedStyles.hunterName}>{profile?.name || 'Hunter'}</Text>
+                <Text style={themedStyles.hunterBio}>
                   {profile?.fitnessLevel || 'Intermediate'} · {profile?.studyFocus || 'DSA'}
                 </Text>
               </View>
-              <View style={styles.levelBlock}>
-                <Text style={styles.levelLabel}>HUNTER LEVEL</Text>
-                <Text style={styles.levelNumber}>{currentLevel}</Text>
+              <View style={themedStyles.levelBlock}>
+                <Text style={themedStyles.levelLabel}>HUNTER LEVEL</Text>
+                <Text style={themedStyles.levelNumber}>{currentLevel}</Text>
               </View>
             </View>
 
             {/* XP Progression Bar */}
-            <View style={styles.xpSection}>
-              <View style={styles.xpLabelRow}>
-                <Text style={styles.xpCaption}>EXPERIENCE PROGRESS</Text>
-                <Text style={styles.xpNumbers}>
+            <View style={themedStyles.xpSection}>
+              <View style={themedStyles.xpLabelRow}>
+                <Text style={themedStyles.xpCaption}>EXPERIENCE PROGRESS</Text>
+                <Text style={themedStyles.xpNumbers}>
                   {xpInCurrentLevel} / {XP_PER_LEVEL} XP
                 </Text>
               </View>
-              <View style={styles.xpTrack}>
-                <View style={[styles.xpFill, { width: `${xpProgressPercent}%` }]} />
+              <View style={themedStyles.xpTrack}>
+                <View style={[themedStyles.xpFill, { width: `${xpProgressPercent}%` }]} />
               </View>
             </View>
 
             {/* Next Level Rewards Preview Box */}
-            <View style={styles.nextRewardBox}>
-              <Text style={styles.nextRewardLabel}>NEXT LEVEL REWARD PREVIEW:</Text>
-              <Text style={styles.nextRewardText}>{nextRewardText}</Text>
+            <View style={themedStyles.nextRewardBox}>
+              <Text style={themedStyles.nextRewardLabel}>NEXT LEVEL REWARD PREVIEW:</Text>
+              <Text style={themedStyles.nextRewardText}>{nextRewardText}</Text>
             </View>
           </View>
 
           {/* Morning System Protocol Banner */}
           <Pressable
-            style={styles.morningCard}
+            style={themedStyles.morningCard}
             onPress={() => setShowMorningBriefing(true)}
           >
-            <View style={styles.morningIconBox}>
-              <Text style={styles.morningIcon}>☀</Text>
+            <View style={themedStyles.morningIconBox}>
+              <Text style={themedStyles.morningIcon}>☀</Text>
             </View>
-            <View style={styles.morningDetails}>
-              <Text style={styles.morningTitle}>
+            <View style={themedStyles.morningDetails}>
+              <Text style={themedStyles.morningTitle}>
                 {profile?.morningProtocolDoneToday
                   ? 'MORNING PROTOCOL ACTIVE (1.25x XP)'
                   : 'ENGAGE MORNING SYSTEM BRIEFING'}
               </Text>
-              <Text style={styles.morningSub}>
+              <Text style={themedStyles.morningSub}>
                 Sunlight · Hydration · Posture · 10m Physiology
               </Text>
             </View>
-            <Text style={styles.morningArrow}>➔</Text>
+            <Text style={themedStyles.morningArrow}>➔</Text>
           </Pressable>
 
           {/* Pentagon Stat Radar Chart Card */}
-          <View style={styles.pentagonCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>PENTAGON STAT MATRIX</Text>
-              <Text style={styles.statBalanceTag}>
+          <View style={themedStyles.pentagonCard}>
+            <View style={themedStyles.sectionHeader}>
+              <Text style={themedStyles.sectionTitle}>PENTAGON STAT MATRIX</Text>
+              <Text style={themedStyles.statBalanceTag}>
                 TOTAL: {stats.strength + stats.knowledge + stats.discipline + stats.health + stats.mindfulness} PTS
               </Text>
             </View>
@@ -238,52 +248,52 @@ export default function HomeScreen() {
             <PentagonChart stats={stats} size={300} />
 
             {/* Quick Stat Tiles */}
-            <View style={styles.statTilesGrid}>
-              <View style={styles.statTile}>
-                <Text style={styles.statTileLabel}>⚔️ STR</Text>
-                <Text style={[styles.statTileVal, { color: '#ff5376' }]}>{stats.strength}</Text>
+            <View style={themedStyles.statTilesGrid}>
+              <View style={themedStyles.statTile}>
+                <Text style={themedStyles.statTileLabel}>⚔️ STR</Text>
+                <Text style={[themedStyles.statTileVal, { color: theme.error }]}>{stats.strength}</Text>
               </View>
-              <View style={styles.statTile}>
-                <Text style={styles.statTileLabel}>📜 KNW</Text>
-                <Text style={[styles.statTileVal, { color: '#6de7ff' }]}>{stats.knowledge}</Text>
+              <View style={themedStyles.statTile}>
+                <Text style={themedStyles.statTileLabel}>📜 KNW</Text>
+                <Text style={[themedStyles.statTileVal, { color: theme.accent }]}>{stats.knowledge}</Text>
               </View>
-              <View style={styles.statTile}>
-                <Text style={styles.statTileLabel}>🛡️ DIS</Text>
-                <Text style={[styles.statTileVal, { color: '#fbb03b' }]}>{stats.discipline}</Text>
+              <View style={themedStyles.statTile}>
+                <Text style={themedStyles.statTileLabel}>🛡️ DIS</Text>
+                <Text style={[themedStyles.statTileVal, { color: theme.warning }]}>{stats.discipline}</Text>
               </View>
-              <View style={styles.statTile}>
-                <Text style={styles.statTileLabel}>💧 HLT</Text>
-                <Text style={[styles.statTileVal, { color: '#38ef7d' }]}>{stats.health}</Text>
+              <View style={themedStyles.statTile}>
+                <Text style={themedStyles.statTileLabel}>💧 HLT</Text>
+                <Text style={[themedStyles.statTileVal, { color: theme.success }]}>{stats.health}</Text>
               </View>
-              <View style={styles.statTile}>
-                <Text style={styles.statTileLabel}>🧘 MND</Text>
-                <Text style={[styles.statTileVal, { color: '#c084fc' }]}>{stats.mindfulness}</Text>
+              <View style={themedStyles.statTile}>
+                <Text style={themedStyles.statTileLabel}>🧘 MND</Text>
+                <Text style={[themedStyles.statTileVal, { color: theme.purple }]}>{stats.mindfulness}</Text>
               </View>
             </View>
           </View>
 
           {/* One Featured Actionable Directive */}
           {featuredQuest && (
-            <View style={styles.featuredQuestCard}>
-              <View style={styles.featuredBadgeRow}>
-                <View style={styles.featuredPill}>
-                  <Text style={styles.featuredPillText}>★ FEATURED SYSTEM DIRECTIVE</Text>
+            <View style={themedStyles.featuredQuestCard}>
+              <View style={themedStyles.featuredBadgeRow}>
+                <View style={themedStyles.featuredPill}>
+                  <Text style={themedStyles.featuredPillText}>★ FEATURED SYSTEM DIRECTIVE</Text>
                 </View>
-                <Text style={styles.featuredXpBadge}>+{featuredQuest.xpReward} XP</Text>
+                <Text style={themedStyles.featuredXpBadge}>+{featuredQuest.xpReward} XP</Text>
               </View>
 
-              <Text style={styles.featuredTitle}>{featuredQuest.title}</Text>
-              <Text style={styles.featuredDesc}>{featuredQuest.description}</Text>
+              <Text style={themedStyles.featuredTitle}>{featuredQuest.title}</Text>
+              <Text style={themedStyles.featuredDesc}>{featuredQuest.description}</Text>
 
-              <View style={styles.featuredFooter}>
-                <Text style={styles.featuredStatText}>
+              <View style={themedStyles.featuredFooter}>
+                <Text style={themedStyles.featuredStatText}>
                   Target: +{featuredQuest.statBonus} {featuredQuest.targetStat.toUpperCase()}
                 </Text>
                 <Pressable
-                  style={styles.featuredActionBtn}
+                  style={themedStyles.featuredActionBtn}
                   onPress={() => handleActionableQuestPress(featuredQuest)}
                 >
-                  <Text style={styles.featuredActionBtnText}>
+                  <Text style={themedStyles.featuredActionBtnText}>
                     {featuredQuest.category.toUpperCase() === 'FITNESS'
                       ? 'ENTER WORKOUT RAID ➔'
                       : featuredQuest.category.toUpperCase() === 'STUDY'
@@ -296,55 +306,64 @@ export default function HomeScreen() {
           )}
 
           {/* Daily Missions & Streak Summary */}
-          <View style={styles.dailyHUDCard}>
-            <View style={styles.dailyHUDHeader}>
-              <Text style={styles.dailyHUDTitle}>DAILY MISSION RATIO</Text>
-              <Text style={styles.dailyHUDVal}>
+          <View style={themedStyles.dailyHUDCard}>
+            <View style={themedStyles.dailyHUDHeader}>
+              <Text style={themedStyles.dailyHUDTitle}>DAILY MISSION RATIO</Text>
+              <Text style={themedStyles.dailyHUDVal}>
                 {completedToday} / {totalToday} DIRECTIVES ({dailyProgressPercent}%)
               </Text>
             </View>
-            <View style={styles.dailyHUDTrack}>
-              <View style={[styles.dailyHUDFill, { width: `${dailyProgressPercent}%` }]} />
+            <View style={themedStyles.dailyHUDTrack}>
+              <View style={[themedStyles.dailyHUDFill, { width: `${dailyProgressPercent}%` }]} />
             </View>
           </View>
 
-          {/* Quick Action Matrix Launcher */}
-          <View style={styles.actionsGrid}>
-            <Pressable
-              style={styles.actionTile}
-              onPress={() => router.push('/workout')}
-            >
-              <Text style={styles.actionIcon}>⚔️</Text>
-              <Text style={styles.actionTitle}>WORKOUT RAID</Text>
-              <Text style={styles.actionSub}>Guided Calisthenics</Text>
-            </Pressable>
+          <View style={themedStyles.activitySummaryCard}>
+            <View style={themedStyles.activitySummaryHeader}>
+              <View>
+                <Text style={themedStyles.activitySummaryTitle}>WORKOUT CONSISTENCY</Text>
+                <Text style={themedStyles.activitySummarySub}>
+                  {workoutActivity.hasHistory
+                    ? `${workoutActivity.completedDaysThisWeek} of 7 days active this week`
+                    : 'No completed workouts logged yet'}
+                </Text>
+              </View>
+              <Text style={themedStyles.activityStreak}>🔥 {workoutActivity.streak}-day</Text>
+            </View>
+            <View style={themedStyles.activitySummaryWeek}>
+              {workoutActivity.activity.map((day) => (
+                <View key={day.key} style={themedStyles.activitySummaryDay}>
+                  <Text style={[themedStyles.activitySummaryLabel, day.isToday && themedStyles.activitySummaryToday]}>{day.label}</Text>
+                  <View style={[
+                    themedStyles.activitySummaryDot,
+                    day.complete && themedStyles.activitySummaryComplete,
+                    day.isToday && !day.complete && themedStyles.activitySummaryTodayDot,
+                  ]}>
+                    <Text style={themedStyles.activitySummaryCheck}>{day.complete ? '✓' : day.isToday ? '•' : ''}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
 
-            <Pressable
-              style={styles.actionTile}
-              onPress={() => router.replace('/tools')}
-            >
-              <Text style={styles.actionIcon}>⏱️</Text>
-              <Text style={styles.actionTitle}>FOCUS POMODORO</Text>
-              <Text style={styles.actionSub}>Deep Work Block</Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.actionTile}
-              onPress={() => router.replace('/quests')}
-            >
-              <Text style={styles.actionIcon}>📜</Text>
-              <Text style={styles.actionTitle}>DIRECTIVE MATRIX</Text>
-              <Text style={styles.actionSub}>{activeQuests.length} Directives</Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.actionTile}
-              onPress={() => router.replace('/history')}
-            >
-              <Text style={styles.actionIcon}>🛡️</Text>
-              <Text style={styles.actionTitle}>MISSION ARCHIVE</Text>
-              <Text style={styles.actionSub}>{historyCount} Sealed</Text>
-            </Pressable>
+          <View style={themedStyles.recentProgressCard}>
+            <View style={themedStyles.recentProgressHeader}>
+              <Text style={themedStyles.recentProgressTitle}>RECENT PROGRESS</Text>
+              <Pressable onPress={() => router.push('/profile')}>
+                <Text style={themedStyles.recentProgressLink}>SYSTEM RECORDS →</Text>
+              </Pressable>
+            </View>
+            {history.length ? history.slice(0, 3).map((entry) => (
+              <View key={entry._id} style={themedStyles.recentProgressRow}>
+                <View style={themedStyles.recentProgressCopy}>
+                  <Text style={themedStyles.recentProgressEntry} numberOfLines={1}>{entry.title}</Text>
+                  <Text style={themedStyles.recentProgressCategory}>{entry.category}</Text>
+                </View>
+                <Text style={themedStyles.recentProgressXp}>+{entry.xpEarned} XP</Text>
+              </View>
+            )) : (
+              <Text style={themedStyles.recentProgressEmpty}>Completed routines and directives will appear here.</Text>
+            )}
           </View>
         </ScrollView>
 
@@ -359,7 +378,7 @@ export default function HomeScreen() {
           onComplete={handleOnboardingComplete}
         />
 
-        <BottomNavigation active="status" />
+        <BottomNavigation active="home" />
       </SafeAreaView>
     </View>
   );
@@ -720,6 +739,36 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
   },
+  activitySummaryCard: {
+    backgroundColor: '#071626',
+    borderWidth: 1,
+    borderColor: '#183652',
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 14,
+  },
+  activitySummaryHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  activitySummaryTitle: { color: '#eaf6ff', fontSize: 11, fontWeight: '900', letterSpacing: 1 },
+  activitySummarySub: { color: '#698ba6', fontSize: 10, marginTop: 4 },
+  activityStreak: { color: '#fbb03b', fontSize: 13, fontWeight: '900' },
+  activitySummaryWeek: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, marginTop: 14 },
+  activitySummaryDay: { flex: 1, alignItems: 'center', gap: 6 },
+  activitySummaryLabel: { color: '#69839a', fontSize: 9, fontWeight: '700' },
+  activitySummaryToday: { color: '#00f3ff' },
+  activitySummaryDot: { width: 28, height: 28, borderRadius: 8, borderWidth: 1, borderColor: '#263a4e', backgroundColor: '#101d2a', alignItems: 'center', justifyContent: 'center' },
+  activitySummaryComplete: { borderColor: '#22c99a', backgroundColor: 'rgba(34, 201, 154, 0.18)' },
+  activitySummaryTodayDot: { borderColor: '#00cbd4', backgroundColor: 'rgba(0, 203, 212, 0.08)' },
+  activitySummaryCheck: { color: '#42e0b2', fontSize: 13, fontWeight: '900' },
+  recentProgressCard: { backgroundColor: '#071626', borderWidth: 1, borderColor: '#183652', borderRadius: 12, padding: 14, marginTop: 14, marginBottom: 18 },
+  recentProgressHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
+  recentProgressTitle: { color: '#eaf6ff', fontSize: 11, fontWeight: '900', letterSpacing: 1 },
+  recentProgressLink: { color: '#00dce8', fontSize: 9, fontWeight: '900', letterSpacing: 0.3 },
+  recentProgressRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10, paddingVertical: 9, borderTopWidth: 1, borderTopColor: '#122c45' },
+  recentProgressCopy: { flex: 1 },
+  recentProgressEntry: { color: '#cde1ee', fontSize: 11, fontWeight: '700' },
+  recentProgressCategory: { color: '#6687a2', fontSize: 9, marginTop: 3 },
+  recentProgressXp: { color: '#38ef7d', fontSize: 10, fontWeight: '900' },
+  recentProgressEmpty: { color: '#698ba6', fontSize: 10, paddingTop: 6, lineHeight: 15 },
   dailyHUDHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

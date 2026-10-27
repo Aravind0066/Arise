@@ -1,5 +1,12 @@
 const geminiService = require('../services/geminiService');
 
+function getWorkoutGenerationTimeoutMs() {
+  const configured = Number(process.env.GEMINI_WORKOUT_TIMEOUT_MS);
+  return Number.isInteger(configured) && configured >= 15000 && configured <= 120000
+    ? configured
+    : 45000;
+}
+
 /**
  * POST /api/ai/generate
  * Expected body: { prompt: string }
@@ -16,8 +23,17 @@ async function generate(req, res) {
       .json({ success: false, error: 'Prompt exceeds maximum length of 4000 characters.' });
   }
 
+  const controller = new AbortController();
+  const abortIfClientDisconnected = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  res.on?.('close', abortIfClientDisconnected);
   try {
-    const result = await geminiService.generateResponse(prompt);
+    const result = await geminiService.generateResponse(prompt, {
+      timeout: getWorkoutGenerationTimeoutMs(),
+      signal: controller.signal,
+    });
+    if (controller.signal.aborted) return;
     if (result.success) {
       return res.json({ success: true, data: result.data });
     }
@@ -26,6 +42,8 @@ async function generate(req, res) {
   } catch (err) {
     // Unexpected error – do not leak stack trace
     return res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+  } finally {
+    res.off?.('close', abortIfClientDisconnected);
   }
 }
 

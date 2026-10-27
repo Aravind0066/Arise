@@ -21,6 +21,13 @@ test('Gemini Service: returns error when GEMINI_API_KEY missing', async () => {
   });
 });
 
+test('Gemini Service: remaps shut-down / hanging model aliases to gemini-3.5-flash', () => {
+  assert.equal(_internal.resolveModel('gemini-2.0-flash'), 'gemini-3.5-flash');
+  assert.equal(_internal.resolveModel('gemini-3.5-flash-lite'), 'gemini-3.5-flash');
+  assert.equal(_internal.resolveModel('gemini-3.5-flash'), 'gemini-3.5-flash');
+  assert.equal(_internal.resolveModel(undefined), 'gemini-3.5-flash');
+});
+
 // Test handling of rate limit error
 test('Gemini Service: handles rate limit (429) error gracefully', async () => {
   // Mock client that throws error with code 429

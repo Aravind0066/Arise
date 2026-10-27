@@ -1,6 +1,8 @@
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,45 +11,23 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation } from '../components/BottomNavigation';
 import {
-  getAchievements,
-  getHunterHistory,
   getHunterProfile,
-  getHunterStats,
-  getWorkoutLogs,
   resetAllData,
-  XP_PER_LEVEL,
 } from '../lib/hunterStorage';
-import { Achievement, CompletedLog, HunterProfile, HunterStats, WorkoutLog } from '../lib/hunterTypes';
+import { HunterProfile } from '../lib/hunterTypes';
 
 export default function ProfileScreen() {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
   const router = useRouter();
   const [profile, setProfile] = useState<HunterProfile | null>(null);
-  const [stats, setStats] = useState<HunterStats>({
-    strength: 35,
-    knowledge: 40,
-    discipline: 30,
-    health: 45,
-    mindfulness: 35,
-  });
-  const [achievements, setAchievements] = useState<Achievement[]>([]);
-  const [workoutLogs, setWorkoutLogs] = useState<WorkoutLog[]>([]);
-  const [historyLogs, setHistoryLogs] = useState<CompletedLog[]>([]);
   const [notice, setNotice] = useState('');
 
   const loadData = useCallback(async () => {
     const p = await getHunterProfile();
-    const s = await getHunterStats();
-    const a = await getAchievements();
-    const w = await getWorkoutLogs();
-    const h = await getHunterHistory();
     setProfile(p);
-    setStats(s);
-    setAchievements(a);
-    setWorkoutLogs(w);
-    setHistoryLogs(h);
   }, []);
 
   useFocusEffect(
@@ -56,220 +36,167 @@ export default function ProfileScreen() {
     }, [loadData])
   );
 
+  const executeDelete = async () => {
+    try {
+      await resetAllData();
+      setProfile(null);
+      router.replace('/');
+    } catch (err: any) {
+      const errorMsg = err?.message || 'Failed to remove account data';
+      setNotice(`ACCOUNT DELETION FAILED: ${errorMsg}`);
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(`Account deletion failed: ${errorMsg}`);
+      } else {
+        Alert.alert('Deletion Error', errorMsg);
+      }
+    }
+  };
+
   const handleResetProfile = () => {
-    Alert.alert(
-      'Reset Hunter Progression?',
-      'This will clear local character stats and initiate re-awakening onboarding.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset System',
-          style: 'destructive',
-          onPress: async () => {
-            await resetAllData();
-            router.replace('/');
+    const title = 'Delete Hunter Account?';
+    const message = 'This will permanently remove your hunter profile, stats, active quests, and progression history. Appearance preferences will be preserved. Are you sure you want to proceed?';
+
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) {
+        executeDelete();
+      }
+    } else {
+      Alert.alert(
+        title,
+        message,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete Account',
+            style: 'destructive',
+            onPress: executeDelete,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
 
   // BMI Calculation
-  const hMeters = (profile?.height || 175) / 100;
-  const bmi = ((profile?.weight || 70) / (hMeters * hMeters)).toFixed(1);
-
-  // Total Workout minutes
-  const totalWorkoutMinutes = Math.round(
-    workoutLogs.reduce((acc, log) => acc + (log.durationSeconds || 0), 0) / 60
-  );
-
-  const statBars = [
-    { label: 'STRENGTH', val: stats.strength, color: '#ff5376', icon: '⚔️' },
-    { label: 'KNOWLEDGE', val: stats.knowledge, color: '#6de7ff', icon: '📜' },
-    { label: 'DISCIPLINE', val: stats.discipline, color: '#fbb03b', icon: '🛡️' },
-    { label: 'HEALTH', val: stats.health, color: '#38ef7d', icon: '💧' },
-    { label: 'MINDFULNESS', val: stats.mindfulness, color: '#c084fc', icon: '🧘' },
-  ];
-
-  const currentXp = profile?.xp || 0;
-  const xpInCurrentLevel = currentXp % XP_PER_LEVEL;
-  const xpPercent = Math.min(100, Math.round((xpInCurrentLevel / XP_PER_LEVEL) * 100));
+  const bmi = profile?.height && profile.weight
+    ? (profile.weight / ((profile.height / 100) ** 2)).toFixed(1)
+    : null;
 
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.header}>
-            <Text style={styles.systemTag}>SYSTEM // HUNTER DOSSIER</Text>
-            <Text style={styles.title}>CHARACTER SHEET</Text>
+    <View style={themedStyles.root}>
+      <SafeAreaView style={themedStyles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={themedStyles.content}>
+          <View style={themedStyles.header}>
+            <View>
+              <Text style={themedStyles.systemTag}>SYSTEM // HUNTER DOSSIER</Text>
+              <Text style={themedStyles.title}>CHARACTER SHEET</Text>
+            </View>
+            <Pressable
+              style={themedStyles.settingsBtn}
+              onPress={() => router.push('/settings')}
+            >
+              <Text style={themedStyles.settingsBtnText}>⚙ SETTINGS</Text>
+            </Pressable>
           </View>
 
           {notice ? (
-            <View style={styles.noticeBox}>
-              <Text style={styles.noticeText}>⚡ {notice}</Text>
+            <View style={themedStyles.noticeBox}>
+              <Text style={themedStyles.noticeText}>⚡ {notice}</Text>
             </View>
           ) : null}
 
           {/* Dossier Card */}
-          <View style={styles.card}>
-            <View style={styles.dossierTop}>
-              <View style={styles.avatarGlow}>
-                <Text style={styles.avatarText}>
+          <View style={themedStyles.card}>
+            <View style={themedStyles.dossierTop}>
+              <View style={themedStyles.avatarGlow}>
+                <Text style={themedStyles.avatarText}>
                   {profile?.name ? profile.name.slice(0, 2).toUpperCase() : 'SJ'}
                 </Text>
               </View>
-              <View style={styles.dossierMeta}>
-                <View style={styles.rankPill}>
-                  <Text style={styles.rankPillText}>{profile?.rank || 'E-RANK'}</Text>
+              <View style={themedStyles.dossierMeta}>
+                <View style={themedStyles.rankPill}>
+                  <Text style={themedStyles.rankPillText}>{profile?.rank || 'E-RANK'}</Text>
                 </View>
-                <Text style={styles.name}>{profile?.name || 'Hunter'}</Text>
-                <Text style={styles.userTitle}>[ {profile?.title || 'THE AWAKENED'} ]</Text>
-                <Text style={styles.email}>{profile?.email || 'hunter@system.io'}</Text>
-              </View>
-            </View>
-
-            {/* Level & XP progress bar */}
-            <View style={styles.levelProgressContainer}>
-              <View style={styles.levelRow}>
-                <Text style={styles.levelBadgeText}>LEVEL {profile?.level || 1}</Text>
-                <Text style={styles.levelXpText}>
-                  {xpInCurrentLevel} / {XP_PER_LEVEL} XP ({xpPercent}%)
-                </Text>
-              </View>
-              <View style={styles.levelTrack}>
-                <View style={[styles.levelFill, { width: `${xpPercent}%` }]} />
+                <Text style={themedStyles.name}>{profile?.name || 'Hunter'}</Text>
+                <Text style={themedStyles.userTitle}>[ {profile?.title || 'THE AWAKENED'} ]</Text>
+                <Text style={themedStyles.email}>{profile?.email || 'Email not set'}</Text>
               </View>
             </View>
 
             {/* Biometrics Grid */}
-            <View style={styles.bioGrid}>
-              <View style={styles.bioBox}>
-                <Text style={styles.bioLabel}>HEIGHT</Text>
-                <Text style={styles.bioVal}>{profile?.height || 175} cm</Text>
+            <View style={themedStyles.bioGrid}>
+              <View style={themedStyles.bioBox}>
+                <Text style={themedStyles.bioLabel}>HEIGHT</Text>
+                <Text style={themedStyles.bioVal}>{profile?.height ? `${profile.height} cm` : 'Not set'}</Text>
               </View>
-              <View style={styles.bioBox}>
-                <Text style={styles.bioLabel}>WEIGHT</Text>
-                <Text style={styles.bioVal}>{profile?.weight || 70} kg</Text>
+              <View style={themedStyles.bioBox}>
+                <Text style={themedStyles.bioLabel}>WEIGHT</Text>
+                <Text style={themedStyles.bioVal}>{profile?.weight ? `${profile.weight} kg` : 'Not set'}</Text>
               </View>
-              <View style={styles.bioBox}>
-                <Text style={styles.bioLabel}>BMI INDEX</Text>
-                <Text style={styles.bioVal}>{bmi}</Text>
+              <View style={themedStyles.bioBox}>
+                <Text style={themedStyles.bioLabel}>BMI INDEX</Text>
+                <Text style={themedStyles.bioVal}>{bmi ?? 'Not set'}</Text>
               </View>
-              <View style={styles.bioBox}>
-                <Text style={styles.bioLabel}>FOCUS</Text>
-                <Text style={styles.bioValSmall}>{profile?.studyFocus || 'CS / DSA'}</Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Character Attributes Breakdown */}
-          <View style={styles.card}>
-            <Text style={styles.cardHeaderTitle}>CHARACTER STAT BREAKDOWN</Text>
-            <View style={styles.statBarsList}>
-              {statBars.map((sb) => (
-                <View key={sb.label} style={styles.barItem}>
-                  <View style={styles.barHeader}>
-                    <Text style={styles.barName}>
-                      {sb.icon} {sb.label}
-                    </Text>
-                    <Text style={[styles.barScore, { color: sb.color }]}>{sb.val} / 100</Text>
-                  </View>
-                  <View style={styles.barTrack}>
-                    <View
-                      style={[
-                        styles.barFill,
-                        { width: `${sb.val}%`, backgroundColor: sb.color },
-                      ]}
-                    />
-                  </View>
-                </View>
-              ))}
-            </View>
-          </View>
-
-          {/* Workout Records & Training History */}
-          <View style={styles.card}>
-            <Text style={styles.cardHeaderTitle}>WORKOUT RECORDS & PROGRESS</Text>
-            <View style={styles.recordsGrid}>
-              <View style={styles.recordBox}>
-                <Text style={styles.recordLabel}>RAIDS COMPLETED</Text>
-                <Text style={styles.recordVal}>{workoutLogs.length}</Text>
-              </View>
-              <View style={styles.recordBox}>
-                <Text style={styles.recordLabel}>TRAINING TIME</Text>
-                <Text style={styles.recordVal}>{totalWorkoutMinutes}m</Text>
-              </View>
-              <View style={styles.recordBox}>
-                <Text style={styles.recordLabel}>DIRECTIVES SEALED</Text>
-                <Text style={[styles.recordVal, { color: '#38ef7d' }]}>{historyLogs.length}</Text>
-              </View>
-              <View style={styles.recordBox}>
-                <Text style={styles.recordLabel}>ACTIVE STREAK</Text>
-                <Text style={[styles.recordVal, { color: '#ffd700' }]}>
-                  {profile?.streakDays || 1} DAYS
-                </Text>
+              <View style={themedStyles.bioBox}>
+                <Text style={themedStyles.bioLabel}>FOCUS</Text>
+                <Text style={themedStyles.bioValSmall}>{profile?.studyFocus || 'Not set'}</Text>
               </View>
             </View>
           </View>
 
-          {/* Achievements & Badges Matrix */}
-          <View style={styles.card}>
-            <View style={styles.badgeHeaderRow}>
-              <Text style={styles.cardHeaderTitle}>SYSTEM ACHIEVEMENTS & MEDALS</Text>
-              <Text style={styles.badgeCounter}>
-                {achievements.filter((a) => a.unlocked).length} / {achievements.length} UNLOCKED
-              </Text>
-            </View>
-
-            <View style={styles.badgeGrid}>
-              {achievements.map((ach) => {
-                return (
-                  <View
-                    key={ach.id}
-                    style={[styles.badgeItem, ach.unlocked && styles.badgeItemUnlocked]}
-                  >
-                    <Text style={styles.badgeIcon}>{ach.icon}</Text>
-                    <Text
-                      style={[
-                        styles.badgeTitle,
-                        ach.unlocked && styles.badgeTitleUnlocked,
-                      ]}
-                    >
-                      {ach.title}
-                    </Text>
-                    <Text style={styles.badgeDesc} numberOfLines={2}>
-                      {ach.description}
-                    </Text>
-                    <View
-                      style={[
-                        styles.badgeStatus,
-                        ach.unlocked ? styles.badgeStatusDone : styles.badgeStatusLocked,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.badgeStatusText,
-                          ach.unlocked && styles.badgeStatusTextDone,
-                        ]}
-                      >
-                        {ach.unlocked ? '✓ UNLOCKED' : 'LOCKED'}
-                      </Text>
-                    </View>
-                  </View>
-                );
-              })}
+          <View style={themedStyles.card}>
+            <Text style={themedStyles.cardHeaderTitle}>TRAINING PROFILE</Text>
+            <View style={themedStyles.profileDetailsList}>
+              <View style={themedStyles.profileDetailRow}>
+                <Text style={themedStyles.profileDetailLabel}>FITNESS LEVEL</Text>
+                <Text style={themedStyles.profileDetailValue}>{profile?.fitnessLevel || 'Not set'}</Text>
+              </View>
+              <View style={themedStyles.profileDetailRow}>
+                <Text style={themedStyles.profileDetailLabel}>PRIMARY GOAL</Text>
+                <Text style={themedStyles.profileDetailValue}>{profile?.primaryGoal || 'Not set'}</Text>
+              </View>
+              <View style={themedStyles.profileDetailRow}>
+                <Text style={themedStyles.profileDetailLabel}>WEEKLY REST DAY</Text>
+                <Text style={themedStyles.profileDetailValue}>{profile?.restDay || 'Not set'}</Text>
+              </View>
             </View>
           </View>
+
+          {/* Appearance & Themes Configuration Card */}
+          <Pressable
+            style={themedStyles.settingsCard}
+            onPress={() => router.push('/settings')}
+          >
+            <View style={themedStyles.settingsCardLeft}>
+              <Text style={themedStyles.settingsCardIcon}>🎨</Text>
+              <View>
+                <Text style={themedStyles.settingsCardTag}>SYSTEM // APPEARANCE</Text>
+                <Text style={themedStyles.settingsCardTitle}>THEMES & TYPOGRAPHY</Text>
+                <Text style={themedStyles.settingsCardSub}>Customize HUD colors & text scale</Text>
+              </View>
+            </View>
+            <Text style={themedStyles.settingsCardArrow}>➔</Text>
+          </Pressable>
+
+          <Pressable style={themedStyles.historyEntry} onPress={() => router.push('/history')}>
+            <View style={themedStyles.settingsCardLeft}>
+              <Text style={themedStyles.settingsCardIcon}>📜</Text>
+              <View>
+                <Text style={themedStyles.settingsCardTag}>SYSTEM // RECORDS</Text>
+                <Text style={themedStyles.settingsCardTitle}>LOGS & HISTORY</Text>
+                <Text style={themedStyles.settingsCardSub}>Review completed quests and progression entries</Text>
+              </View>
+            </View>
+            <Text style={themedStyles.settingsCardArrow}>➔</Text>
+          </Pressable>
 
           {/* System Reset / Diagnostic action */}
-          <View style={styles.resetContainer}>
-            <Pressable style={styles.resetBtn} onPress={handleResetProfile}>
-              <Text style={styles.resetBtnText}>RESET HUNTER PROGRESSION & RE-AWAKEN</Text>
+          <View style={themedStyles.resetContainer}>
+            <Pressable style={themedStyles.resetBtn} onPress={handleResetProfile}>
+              <Text style={themedStyles.resetBtnText}>DELETE HUNTER ACCOUNT & RESET PROGRESSION</Text>
             </Pressable>
           </View>
         </ScrollView>
-        <BottomNavigation active="profile" />
+        <BottomNavigation active="system" />
       </SafeAreaView>
     </View>
   );
@@ -288,8 +215,25 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: 12,
     marginBottom: 16,
+  },
+  settingsBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#071626',
+    borderWidth: 1,
+    borderColor: '#00f3ff',
+  },
+  settingsBtnText: {
+    color: '#00f3ff',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
   systemTag: {
     color: '#00f3ff',
@@ -444,6 +388,10 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
   },
+  profileDetailsList: { gap: 10 },
+  profileDetailRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#112b42' },
+  profileDetailLabel: { color: '#587c98', fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  profileDetailValue: { color: '#d9eaf5', fontSize: 11, fontWeight: '700', textAlign: 'right', flexShrink: 1 },
   cardHeaderTitle: {
     color: '#ffffff',
     fontSize: 13,
@@ -590,5 +538,64 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 1,
+  },
+  settingsCard: {
+    backgroundColor: '#071626',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#163b5e',
+    borderLeftWidth: 4,
+    borderLeftColor: '#00f3ff',
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  historyEntry: {
+    backgroundColor: '#071626',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#163b5e',
+    borderLeftWidth: 4,
+    borderLeftColor: '#38ef7d',
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  settingsCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  settingsCardIcon: {
+    fontSize: 24,
+  },
+  settingsCardTag: {
+    color: '#00f3ff',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    marginBottom: 2,
+  },
+  settingsCardTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  settingsCardSub: {
+    color: '#557c9c',
+    fontSize: 10,
+    marginTop: 1,
+  },
+  settingsCardArrow: {
+    color: '#00f3ff',
+    fontSize: 16,
+    fontWeight: '900',
+    marginLeft: 8,
   },
 });

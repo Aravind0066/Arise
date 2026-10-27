@@ -1,4 +1,5 @@
-import React, { useCallback, useState } from 'react';
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -10,7 +11,6 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 import { BottomNavigation } from '../components/BottomNavigation';
 import { generateQuests, getWeaknessRecommendations } from '../lib/api';
 import {
@@ -27,6 +27,8 @@ import { HunterQuest, StatType, WeaknessRecommendation } from '../lib/hunterType
 const CATEGORIES = ['ALL', 'FITNESS', 'STUDY', 'DISCIPLINE', 'HEALTH', 'MINDFULNESS'] as const;
 
 export default function QuestsScreen() {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
   const router = useRouter();
   const [quests, setQuests] = useState<HunterQuest[]>([]);
   const [selectedCat, setSelectedCat] = useState<string>('ALL');
@@ -56,7 +58,75 @@ export default function QuestsScreen() {
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState('');
   const [recFallback, setRecFallback] = useState(false);
+  const [recHasScanned, setRecHasScanned] = useState(false);
   const [skippedRecs, setSkippedRecs] = useState<string[]>([]);
+  const hasAutoScanned = useRef(false);
+
+  const fetchRecommendations = useCallback(async () => {
+    setRecLoading(true);
+    setRecError('');
+    setRecFallback(false);
+    setRecommendations([]);
+    try {
+      const profile = await getHunterProfile();
+      const stats = await getHunterStats();
+      const history = await getHunterHistory();
+
+      const goals: string[] = [];
+      if (profile?.primaryGoal) goals.push(profile.primaryGoal);
+      if (profile?.studyFocus) goals.push(profile.studyFocus);
+      if (goals.length === 0) goals.push('General self-improvement');
+
+      const statsRecord: Record<string, number> = {
+        strength: stats.strength,
+        knowledge: stats.knowledge,
+        discipline: stats.discipline,
+        health: stats.health,
+        mindfulness: stats.mindfulness,
+      };
+
+      const completedTitles = history.map((h) => h.title);
+      const currentQuests = await getHunterQuests();
+      const recentQuests = [
+        ...currentQuests.map((q) => ({ _id: q._id, status: q.status })),
+        ...history.slice(0, 5).map((h) => ({ _id: h._id, status: 'completed' })),
+      ];
+
+      const preferredCategories = [
+        profile?.primaryGoal?.toLowerCase().includes('fitness') ? 'Fitness' : 'Study',
+        'Discipline',
+      ];
+
+      const payload = {
+        goals,
+        stats: statsRecord,
+        recentQuests,
+        availableMinutes: 45,
+        preferredCategories,
+        completedQuests: completedTitles,
+        skippedQuests: skippedRecs,
+        difficulty: profile?.fitnessLevel ?? 'Intermediate',
+      };
+
+      const res = await getWeaknessRecommendations(payload);
+      const recList = res.recommendations ?? res.data;
+
+      if (!res.success || !Array.isArray(recList)) {
+        setRecError(res.error ?? 'No recommendations returned.');
+        setRecHasScanned(true);
+        return;
+      }
+
+      setRecommendations(recList);
+      setRecFallback(res.fallback === true);
+      setRecHasScanned(true);
+    } catch (err: any) {
+      setRecError(err.message || 'Failed to load recommendations.');
+      setRecHasScanned(true);
+    } finally {
+      setRecLoading(false);
+    }
+  }, [skippedRecs]);
 
   const loadData = useCallback(async () => {
     const q = await getHunterQuests();
@@ -66,7 +136,11 @@ export default function QuestsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+      if (!hasAutoScanned.current) {
+        hasAutoScanned.current = true;
+        fetchRecommendations();
+      }
+    }, [loadData, fetchRecommendations])
   );
 
   const handleQuestAction = (quest: HunterQuest) => {
@@ -122,97 +196,56 @@ export default function QuestsScreen() {
     }
   };
 
-  const fetchRecommendations = async () => {
-    setRecLoading(true);
-    setRecError('');
-    setRecFallback(false);
+
+
+  const handleAcceptRec = async (rec: WeaknessRecommendation) => {
     try {
-      const profile = await getHunterProfile();
-      const stats = await getHunterStats();
-      const history = await getHunterHistory();
-
-      const goals: string[] = [];
-      if (profile?.primaryGoal) goals.push(profile.primaryGoal);
-      if (profile?.studyFocus) goals.push(profile.studyFocus);
-      if (goals.length === 0) goals.push('General self-improvement');
-
-      const statsRecord: Record<string, number> = {
-        strength: stats.strength,
-        knowledge: stats.knowledge,
-        discipline: stats.discipline,
-        health: stats.health,
-        mindfulness: stats.mindfulness,
-      };
-
-      const completedTitles = history.map((h) => h.title);
-
-      const payload = {
-        goals,
-        stats: statsRecord,
-        completedQuests: completedTitles,
-        skippedQuests: skippedRecs,
-        difficulty: profile?.fitnessLevel ?? 'Intermediate',
-      };
-
-      const res = await getWeaknessRecommendations(payload);
-
-      if (!res.success || !res.data) {
-        setRecError(res.error ?? 'No recommendations returned.');
+      const currentQuests = await getHunterQuests();
+      const titleUpper = rec.title.toUpperCase();
+      const duplicate = currentQuests.some((q) => q.title.toUpperCase() === titleUpper);
+      if (duplicate) {
+        setMessage('DIRECTIVE ALREADY IN HUD');
+        setTimeout(() => setMessage(''), 3000);
+        setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
         return;
       }
 
-      setRecommendations(res.data);
-      setRecFallback(res.fallback === true);
-    } catch (err: any) {
-      setRecError(err.message || 'Failed to load recommendations.');
-    } finally {
-      setRecLoading(false);
-    }
-  };
+      let category: HunterQuest['category'] = 'General';
+      const catLower = (rec.category || '').toLowerCase();
+      if (catLower.includes('fit') || catLower.includes('strength')) category = 'Fitness';
+      else if (catLower.includes('study') || catLower.includes('know')) category = 'Study';
+      else if (catLower.includes('mind')) category = 'Mindfulness';
+      else if (catLower.includes('health')) category = 'Health';
+      else if (catLower.includes('disc')) category = 'Discipline';
 
-  const handleAcceptRec = async (rec: WeaknessRecommendation) => {
-    const currentQuests = await getHunterQuests();
-    const titleUpper = rec.title.toUpperCase();
-    const duplicate = currentQuests.some((q) => q.title.toUpperCase() === titleUpper);
-    if (duplicate) {
-      setMessage('DIRECTIVE ALREADY IN HUD');
-      setTimeout(() => setMessage(''), 3000);
+      let targetStat: StatType = 'discipline';
+      if (category === 'Fitness') targetStat = 'strength';
+      else if (category === 'Study') targetStat = 'knowledge';
+      else if (category === 'Health') targetStat = 'health';
+      else if (category === 'Mindfulness') targetStat = 'mindfulness';
+
+      const newQuest: HunterQuest = {
+        _id: `weakness_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        title: titleUpper,
+        description: rec.description,
+        category,
+        targetStat,
+        statBonus: 3,
+        xpReward: rec.suggestedReward,
+        deadline: rec.deadline,
+        generatedBy: 'ai',
+        status: 'active',
+      };
+
+      const updated = await addHunterQuests([newQuest]);
+      setQuests(updated);
       setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
-      return;
+      setMessage('WEAKNESS DIRECTIVE INJECTED INTO HUD');
+      setTimeout(() => setMessage(''), 4000);
+    } catch (err: any) {
+      setMessage(err?.message || 'Unable to accept directive');
+      setTimeout(() => setMessage(''), 4000);
     }
-
-    let category: HunterQuest['category'] = 'General';
-    const catLower = (rec.category || '').toLowerCase();
-    if (catLower.includes('fit') || catLower.includes('strength')) category = 'Fitness';
-    else if (catLower.includes('study') || catLower.includes('know')) category = 'Study';
-    else if (catLower.includes('mind')) category = 'Mindfulness';
-    else if (catLower.includes('health')) category = 'Health';
-    else if (catLower.includes('disc')) category = 'Discipline';
-
-    let targetStat: StatType = 'discipline';
-    if (category === 'Fitness') targetStat = 'strength';
-    else if (category === 'Study') targetStat = 'knowledge';
-    else if (category === 'Health') targetStat = 'health';
-    else if (category === 'Mindfulness') targetStat = 'mindfulness';
-
-    const newQuest: HunterQuest = {
-      _id: `weakness_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      title: titleUpper,
-      description: rec.description,
-      category,
-      targetStat,
-      statBonus: 3,
-      xpReward: rec.suggestedReward,
-      deadline: rec.deadline,
-      generatedBy: 'ai',
-      status: 'active',
-    };
-
-    const updated = await addHunterQuests([newQuest]);
-    setQuests(updated);
-    setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
-    setMessage('WEAKNESS DIRECTIVE INJECTED INTO HUD');
-    setTimeout(() => setMessage(''), 4000);
   };
 
   const handleSkipRec = (rec: WeaknessRecommendation) => {
@@ -286,63 +319,62 @@ export default function QuestsScreen() {
   const getCategoryTheme = (cat: string) => {
     switch (cat.toUpperCase()) {
       case 'FITNESS':
-        return { color: '#ff5376', icon: '⚔️', label: 'WORKOUT RAID', action: 'ENTER WORKOUT PREP ➔' };
+        return { color: theme.error, icon: '⚔️', label: 'WORKOUT RAID', action: 'ENTER WORKOUT PREP ➔' };
       case 'STUDY':
-        return { color: '#6de7ff', icon: '📜', label: 'STUDY SESSION', action: 'START STUDY BLOCK ➔' };
+        return { color: theme.accent, icon: '📜', label: 'STUDY SESSION', action: 'START STUDY BLOCK ➔' };
       case 'MINDFULNESS':
-        return { color: '#c084fc', icon: '🧘', label: 'MIND PROTOCOL', action: 'ENGAGE PROTOCOL ➔' };
+        return { color: theme.purple, icon: '🧘', label: 'MIND PROTOCOL', action: 'ENGAGE PROTOCOL ➔' };
       case 'HEALTH':
-        return { color: '#38ef7d', icon: '💧', label: 'HEALTH MATRIX', action: 'EXECUTE MATRIX ➔' };
+        return { color: theme.success, icon: '💧', label: 'HEALTH MATRIX', action: 'EXECUTE MATRIX ➔' };
       default:
-        return { color: '#fbb03b', icon: '🛡️', label: 'DISCIPLINE', action: 'VERIFY CHALLENGE ➔' };
+        return { color: theme.warning, icon: '🛡️', label: 'DISCIPLINE', action: 'VERIFY CHALLENGE ➔' };
     }
   };
 
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
+    <View style={themedStyles.root}>
+      <SafeAreaView style={themedStyles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={themedStyles.content}>
           {/* Header */}
-          <View style={styles.header}>
+          <View style={themedStyles.header}>
             <View>
-              <Text style={styles.systemTag}>SYSTEM // QUEST DIRECTIVES</Text>
-              <Text style={styles.title}>ACTIVE DIRECTIVES</Text>
+              <Text style={themedStyles.systemTag}>SYSTEM // QUEST DIRECTIVES</Text>
+              <Text style={themedStyles.title}>ACTIVE DIRECTIVES</Text>
             </View>
             <Pressable
-              style={styles.customBtn}
+              style={themedStyles.customBtn}
               onPress={() => setShowCustomModal(true)}
             >
-              <Text style={styles.customBtnText}>+ CUSTOM</Text>
+              <Text style={themedStyles.customBtnText}>+ CUSTOM</Text>
             </Pressable>
           </View>
 
           {/* AI Generator Panel (Preserved functionality, clean branding) */}
-          <View style={styles.aiPanel}>
-            <View style={styles.aiHeader}>
-              <Text style={styles.aiBadge}>ARISE DIRECTIVE GENERATOR</Text>
-              <Text style={styles.aiSubBadge}>EMBEDDED INTELLIGENCE</Text>
+          <View style={themedStyles.aiPanel}>
+            <View style={themedStyles.aiHeader}>
+              <Text style={themedStyles.aiBadge}>ARISE DIRECTIVE GENERATOR</Text>
+              <Text style={themedStyles.aiSubBadge}>EMBEDDED INTELLIGENCE</Text>
             </View>
-            <Text style={styles.aiPromptLabel}>WHAT IS YOUR TARGET OBJECTIVE?</Text>
+            <Text style={themedStyles.aiPromptLabel}>WHAT IS YOUR TARGET OBJECTIVE?</Text>
             <TextInput
               value={goal}
               onChangeText={setGoal}
               placeholder="e.g. Master Dynamic Programming, 5km Tempo Run, Deep Sleep"
-              placeholderTextColor="#3e6382"
-              style={styles.aiInput}
+              placeholderTextColor={theme.textSecondary}
+              style={themedStyles.aiInput}
             />
 
-            <View style={styles.aiOptionsRow}>
-              <View style={styles.optionCol}>
-                <Text style={styles.miniLabel}>DOMAIN</Text>
-                <View style={styles.miniChips}>
+            <View style={themedStyles.aiOptionsRow}>
+              <View style={themedStyles.optionCol}>
+                <Text style={themedStyles.miniLabel}>DOMAIN</Text>
+                <View style={themedStyles.miniChips}>
                   {(['Study', 'Fitness', 'Discipline', 'Health'] as const).map((c) => (
                     <Pressable
                       key={c}
-                      style={[styles.miniChip, aiCat === c && styles.miniChipActive]}
+                      style={[themedStyles.miniChip, aiCat === c && themedStyles.miniChipActive]}
                       onPress={() => setAiCat(c)}
                     >
-                      <Text style={[styles.miniChipText, aiCat === c && styles.miniChipTextActive]}>
+                      <Text style={[themedStyles.miniChipText, aiCat === c && themedStyles.miniChipTextActive]}>
                         {c.toUpperCase()}
                       </Text>
                     </Pressable>
@@ -352,86 +384,88 @@ export default function QuestsScreen() {
             </View>
 
             <Pressable
-              style={styles.generateBtn}
+              style={themedStyles.generateBtn}
               onPress={handleGenerateAi}
               disabled={loadingAi}
             >
-              <Text style={styles.generateBtnText}>
+              <Text style={themedStyles.generateBtnText}>
                 {loadingAi ? 'CALIBRATING DIRECTIVES...' : 'SPAWN 3 DIRECTIVES ➔'}
               </Text>
             </Pressable>
           </View>
 
           {message ? (
-            <View style={styles.toast}>
-              <Text style={styles.toastText}>⚡ {message}</Text>
+            <View style={themedStyles.toast}>
+              <Text style={themedStyles.toastText}>⚡ {message}</Text>
             </View>
           ) : null}
 
           {/* Weakness-Based Recommendations */}
-          <View style={styles.recPanel}>
-            <View style={styles.recHeader}>
+          <View style={themedStyles.recPanel}>
+            <View style={themedStyles.recHeader}>
               <View>
-                <Text style={styles.recTag}>SYSTEM // WEAKNESS ANALYSIS</Text>
-                <Text style={styles.recTitle}>RECOMMENDED DIRECTIVES</Text>
+                <Text style={themedStyles.recTag}>SYSTEM // WEAKNESS ANALYSIS</Text>
+                <Text style={themedStyles.recTitle}>RECOMMENDED DIRECTIVES</Text>
               </View>
               <Pressable
-                style={styles.recRefreshBtn}
+                style={themedStyles.recRefreshBtn}
                 onPress={fetchRecommendations}
                 disabled={recLoading}
               >
-                <Text style={styles.recRefreshBtnText}>
+                <Text style={themedStyles.recRefreshBtnText}>
                   {recLoading ? '...' : '⟳ SCAN'}
                 </Text>
               </Pressable>
             </View>
 
             {recFallback && (
-              <View style={styles.recFallbackBadge}>
-                <Text style={styles.recFallbackText}>⚠ OFFLINE MODE — EMBEDDED ENGINE ACTIVE</Text>
+              <View style={themedStyles.recFallbackBadge}>
+                <Text style={themedStyles.recFallbackText}>⚠ OFFLINE MODE — EMBEDDED ENGINE ACTIVE</Text>
               </View>
             )}
 
             {recLoading && (
-              <View style={styles.recStateBox}>
-                <Text style={styles.recStateText}>ANALYZING WEAKNESS MATRIX...</Text>
+              <View style={themedStyles.recStateBox}>
+                <Text style={themedStyles.recStateText}>ANALYZING WEAKNESS MATRIX...</Text>
               </View>
             )}
 
             {!recLoading && recError !== '' && (
-              <View style={styles.recStateBox}>
-                <Text style={styles.recErrorText}>{recError}</Text>
-                <Pressable style={styles.recRetryBtn} onPress={fetchRecommendations}>
-                  <Text style={styles.recRetryBtnText}>RETRY ⟳</Text>
+              <View style={themedStyles.recStateBox}>
+                <Text style={themedStyles.recErrorText}>{recError}</Text>
+                <Pressable style={themedStyles.recRetryBtn} onPress={fetchRecommendations}>
+                  <Text style={themedStyles.recRetryBtnText}>RETRY ⟳</Text>
                 </Pressable>
               </View>
             )}
 
             {!recLoading && recError === '' && recommendations.length === 0 && (
-              <View style={styles.recStateBox}>
-                <Text style={styles.recStateText}>
-                  Tap SCAN to generate weakness-based directives from your profile.
+              <View style={themedStyles.recStateBox}>
+                <Text style={themedStyles.recStateText}>
+                  {recHasScanned
+                    ? 'No weakness directives available. Tap SCAN to retry.'
+                    : 'Tap SCAN to generate weakness-based directives from your profile.'}
                 </Text>
               </View>
             )}
 
-            {!recLoading && recommendations.map((rec, idx) => (
-              <View key={`${rec.title}_${idx}`} style={styles.recCard}>
-                <View style={styles.recCardHeader}>
-                  <View style={styles.recCatBadge}>
-                    <Text style={styles.recCatBadgeText}>{rec.category.toUpperCase()}</Text>
+            {!recLoading && recError === '' && recommendations.map((rec, idx) => (
+              <View key={`${rec.title}_${idx}`} style={themedStyles.recCard}>
+                <View style={themedStyles.recCardHeader}>
+                  <View style={themedStyles.recCatBadge}>
+                    <Text style={themedStyles.recCatBadgeText}>{rec.category.toUpperCase()}</Text>
                   </View>
-                  <Text style={styles.recXpText}>+{rec.suggestedReward} XP</Text>
+                  <Text style={themedStyles.recXpText}>+{rec.suggestedReward} XP</Text>
                 </View>
-                <Text style={styles.recCardTitle}>{rec.title}</Text>
-                <Text style={styles.recCardDesc}>{rec.description}</Text>
-                <Text style={styles.recDuration}>⏱ {rec.estimatedDuration} MIN · {rec.difficulty.toUpperCase()}</Text>
-                <View style={styles.recActions}>
-                  <Pressable style={styles.recSkipBtn} onPress={() => handleSkipRec(rec)}>
-                    <Text style={styles.recSkipBtnText}>SKIP</Text>
+                <Text style={themedStyles.recCardTitle}>{rec.title}</Text>
+                <Text style={themedStyles.recCardDesc}>{rec.description}</Text>
+                <Text style={themedStyles.recDuration}>⏱ {rec.estimatedDuration} MIN · {rec.difficulty.toUpperCase()}</Text>
+                <View style={themedStyles.recActions}>
+                  <Pressable style={themedStyles.recSkipBtn} onPress={() => handleSkipRec(rec)}>
+                    <Text style={themedStyles.recSkipBtnText}>SKIP</Text>
                   </Pressable>
-                  <Pressable style={styles.recAcceptBtn} onPress={() => handleAcceptRec(rec)}>
-                    <Text style={styles.recAcceptBtnText}>ACCEPT DIRECTIVE ➔</Text>
+                  <Pressable style={themedStyles.recAcceptBtn} onPress={() => handleAcceptRec(rec)}>
+                    <Text style={themedStyles.recAcceptBtnText}>ACCEPT DIRECTIVE ➔</Text>
                   </Pressable>
                 </View>
               </View>
@@ -442,15 +476,15 @@ export default function QuestsScreen() {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
+            contentContainerStyle={themedStyles.filterRow}
           >
             {CATEGORIES.map((cat) => (
               <Pressable
                 key={cat}
-                style={[styles.filterChip, selectedCat === cat && styles.filterChipActive]}
+                style={[themedStyles.filterChip, selectedCat === cat && themedStyles.filterChipActive]}
                 onPress={() => setSelectedCat(cat)}
               >
-                <Text style={[styles.filterText, selectedCat === cat && styles.filterTextActive]}>
+                <Text style={[themedStyles.filterText, selectedCat === cat && themedStyles.filterTextActive]}>
                   {cat}
                 </Text>
               </Pressable>
@@ -458,7 +492,7 @@ export default function QuestsScreen() {
           </ScrollView>
 
           {/* Quests List */}
-          <View style={styles.list}>
+          <View style={themedStyles.list}>
             {filteredQuests.map((quest) => {
               const isCompleted = quest.status === 'completed';
               const theme = getCategoryTheme(quest.category);
@@ -467,42 +501,42 @@ export default function QuestsScreen() {
                 <View
                   key={quest._id}
                   style={[
-                    styles.questCard,
+                    themedStyles.questCard,
                     { borderLeftColor: theme.color, borderLeftWidth: 4 },
-                    isCompleted && styles.questCardCompleted,
+                    isCompleted && themedStyles.questCardCompleted,
                   ]}
                 >
-                  <View style={styles.questHeader}>
-                    <View style={[styles.catBadge, { backgroundColor: `${theme.color}22`, borderColor: theme.color }]}>
-                      <Text style={[styles.catBadgeText, { color: theme.color }]}>
+                  <View style={themedStyles.questHeader}>
+                    <View style={[themedStyles.catBadge, { backgroundColor: `${theme.color}22`, borderColor: theme.color }]}>
+                      <Text style={[themedStyles.catBadgeText, { color: theme.color }]}>
                         {theme.icon} {quest.category.toUpperCase()}
                       </Text>
                     </View>
-                    <View style={styles.xpBadge}>
-                      <Text style={styles.xpBadgeText}>+{quest.xpReward} XP</Text>
+                    <View style={themedStyles.xpBadge}>
+                      <Text style={themedStyles.xpBadgeText}>+{quest.xpReward} XP</Text>
                     </View>
                   </View>
 
-                  <Text style={[styles.questTitle, isCompleted && styles.questTitleDone]}>
+                  <Text style={[themedStyles.questTitle, isCompleted && themedStyles.questTitleDone]}>
                     {quest.title}
                   </Text>
-                  <Text style={styles.questDesc}>{quest.description}</Text>
+                  <Text style={themedStyles.questDesc}>{quest.description}</Text>
 
-                  <View style={styles.questFooter}>
-                    <Text style={styles.statImpact}>
+                  <View style={themedStyles.questFooter}>
+                    <Text style={themedStyles.statImpact}>
                       Target: +{quest.statBonus} {quest.targetStat?.toUpperCase()}
                     </Text>
 
                     {isCompleted ? (
-                      <View style={styles.completedTag}>
-                        <Text style={styles.completedTagText}>✓ VERIFIED & SEALED</Text>
+                      <View style={themedStyles.completedTag}>
+                        <Text style={themedStyles.completedTagText}>✓ VERIFIED & SEALED</Text>
                       </View>
                     ) : (
                       <Pressable
-                        style={[styles.actionBtn, { borderColor: theme.color }]}
+                        style={[themedStyles.actionBtn, { borderColor: theme.color }]}
                         onPress={() => handleQuestAction(quest)}
                       >
-                        <Text style={[styles.actionBtnText, { color: theme.color }]}>
+                        <Text style={[themedStyles.actionBtnText, { color: theme.color }]}>
                           {theme.action}
                         </Text>
                       </Pressable>
@@ -513,8 +547,8 @@ export default function QuestsScreen() {
             })}
 
             {filteredQuests.length === 0 && (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>
+              <View style={themedStyles.emptyCard}>
+                <Text style={themedStyles.emptyText}>
                   No directives found for {selectedCat}. Use the Generator above to spawn new quests!
                 </Text>
               </View>
@@ -524,51 +558,51 @@ export default function QuestsScreen() {
 
         {/* Custom Quest Creation Modal */}
         <Modal visible={showCustomModal} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>CREATE CUSTOM DIRECTIVE</Text>
-              <Text style={styles.modalSub}>
+          <View style={themedStyles.modalOverlay}>
+            <View style={themedStyles.modalCard}>
+              <Text style={themedStyles.modalTitle}>CREATE CUSTOM DIRECTIVE</Text>
+              <Text style={themedStyles.modalSub}>
                 Inject a personal mission into your HunterOS HUD.
               </Text>
 
-              <Text style={styles.miniLabel}>DIRECTIVE NAME</Text>
+              <Text style={themedStyles.miniLabel}>DIRECTIVE NAME</Text>
               <TextInput
                 value={customTitle}
                 onChangeText={setCustomTitle}
                 placeholder="e.g. READ 30 PAGES OF OPERATING SYSTEMS"
-                placeholderTextColor="#3e6382"
-                style={styles.modalInput}
+                placeholderTextColor={theme.textSecondary}
+                style={themedStyles.modalInput}
               />
 
-              <Text style={styles.miniLabel}>DESCRIPTION / VERIFICATION CRITERIA</Text>
+              <Text style={themedStyles.miniLabel}>DESCRIPTION / VERIFICATION CRITERIA</Text>
               <TextInput
                 value={customDesc}
                 onChangeText={setCustomDesc}
                 placeholder="Specific action required to prove completion."
-                placeholderTextColor="#3e6382"
-                style={styles.modalInput}
+                placeholderTextColor={theme.textSecondary}
+                style={themedStyles.modalInput}
               />
 
-              <View style={styles.statRow}>
+              <View style={themedStyles.statRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.miniLabel}>XP REWARD</Text>
+                  <Text style={themedStyles.miniLabel}>XP REWARD</Text>
                   <TextInput
                     value={customXp}
                     onChangeText={setCustomXp}
                     keyboardType="number-pad"
-                    style={styles.modalInput}
+                    style={themedStyles.modalInput}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.miniLabel}>TARGET STAT</Text>
-                  <View style={styles.statChips}>
+                  <Text style={themedStyles.miniLabel}>TARGET STAT</Text>
+                  <View style={themedStyles.statChips}>
                     {(['strength', 'knowledge', 'discipline', 'health', 'mindfulness'] as const).map((s) => (
                       <Pressable
                         key={s}
-                        style={[styles.statChip, customStat === s && styles.statChipActive]}
+                        style={[themedStyles.statChip, customStat === s && themedStyles.statChipActive]}
                         onPress={() => setCustomStat(s)}
                       >
-                        <Text style={[styles.statChipText, customStat === s && styles.statChipTextActive]}>
+                        <Text style={[themedStyles.statChipText, customStat === s && themedStyles.statChipTextActive]}>
                           {s.slice(0, 3).toUpperCase()}
                         </Text>
                       </Pressable>
@@ -577,15 +611,15 @@ export default function QuestsScreen() {
                 </View>
               </View>
 
-              <View style={styles.modalBtns}>
+              <View style={themedStyles.modalBtns}>
                 <Pressable
-                  style={styles.cancelBtn}
+                  style={themedStyles.cancelBtn}
                   onPress={() => setShowCustomModal(false)}
                 >
-                  <Text style={styles.cancelBtnText}>CANCEL</Text>
+                  <Text style={themedStyles.cancelBtnText}>CANCEL</Text>
                 </Pressable>
-                <Pressable style={styles.confirmBtn} onPress={handleCreateCustom}>
-                  <Text style={styles.confirmBtnText}>INJECT DIRECTIVE</Text>
+                <Pressable style={themedStyles.confirmBtn} onPress={handleCreateCustom}>
+                  <Text style={themedStyles.confirmBtnText}>INJECT DIRECTIVE</Text>
                 </Pressable>
               </View>
             </View>
@@ -598,19 +632,19 @@ export default function QuestsScreen() {
           transparent
           animationType="fade"
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.actionModalCard}>
-              <View style={styles.actionModalHeader}>
-                <Text style={styles.actionModalTag}>
+          <View style={themedStyles.modalOverlay}>
+            <View style={themedStyles.actionModalCard}>
+              <View style={themedStyles.actionModalHeader}>
+                <Text style={themedStyles.actionModalTag}>
                   SYSTEM // {selectedQuestForAction?.category.toUpperCase()} PROTOCOL
                 </Text>
-                <Text style={styles.actionModalTitle}>{selectedQuestForAction?.title}</Text>
-                <Text style={styles.actionModalDesc}>{selectedQuestForAction?.description}</Text>
+                <Text style={themedStyles.actionModalTitle}>{selectedQuestForAction?.title}</Text>
+                <Text style={themedStyles.actionModalDesc}>{selectedQuestForAction?.description}</Text>
               </View>
 
-              <View style={styles.actionCriteriaBox}>
-                <Text style={styles.actionCriteriaLabel}>VERIFICATION & LOGGING</Text>
-                <Text style={styles.actionCriteriaText}>
+              <View style={themedStyles.actionCriteriaBox}>
+                <Text style={themedStyles.actionCriteriaLabel}>VERIFICATION & LOGGING</Text>
+                <Text style={themedStyles.actionCriteriaText}>
                   {selectedQuestForAction?.category === 'Study'
                     ? 'State the key algorithm, system concept, or problem solved:'
                     : selectedQuestForAction?.category === 'Mindfulness'
@@ -621,32 +655,32 @@ export default function QuestsScreen() {
                   value={verificationNote}
                   onChangeText={setVerificationNote}
                   placeholder="e.g. Mastered binary search invariant, zero distractions maintained..."
-                  placeholderTextColor="#3e6382"
+                  placeholderTextColor={theme.textSecondary}
                   multiline
-                  style={styles.actionModalInput}
+                  style={themedStyles.actionModalInput}
                 />
               </View>
 
-              <View style={styles.rewardAccreditationRow}>
-                <Text style={styles.rewardAccreditText}>
+              <View style={themedStyles.rewardAccreditationRow}>
+                <Text style={themedStyles.rewardAccreditText}>
                   Accreditation: +{selectedQuestForAction?.xpReward} XP · +{selectedQuestForAction?.statBonus}{' '}
                   {selectedQuestForAction?.targetStat.toUpperCase()}
                 </Text>
               </View>
 
-              <View style={styles.modalBtns}>
+              <View style={themedStyles.modalBtns}>
                 <Pressable
-                  style={styles.cancelBtn}
+                  style={themedStyles.cancelBtn}
                   onPress={() => setSelectedQuestForAction(null)}
                 >
-                  <Text style={styles.cancelBtnText}>DISMISS</Text>
+                  <Text style={themedStyles.cancelBtnText}>DISMISS</Text>
                 </Pressable>
                 <Pressable
-                  style={styles.confirmBtn}
+                  style={themedStyles.confirmBtn}
                   onPress={handleVerifyModalSubmit}
                   disabled={isVerifying}
                 >
-                  <Text style={styles.confirmBtnText}>
+                  <Text style={themedStyles.confirmBtnText}>
                     {isVerifying ? 'VERIFYING...' : 'CONFIRM & SEAL DIRECTIVE ➔'}
                   </Text>
                 </Pressable>

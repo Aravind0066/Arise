@@ -1,5 +1,4 @@
-import { HunterQuest, StatType } from './hunterTypes';
-import type { ApiResponse, AiGenerateInput, AiGenerateResponse, WeaknessInput, WeaknessRecommendation, WeaknessResponse, NutritionInput, NutritionRecommendation, NutritionResponse, ChatInput, ChatResponse, ChatApiResponse } from './hunterTypes';
+import type { HunterQuest, StatType, ApiResponse, AiGenerateInput, AiGenerateResponse, WeaknessInput, WeaknessRecommendation, WeaknessResponse, NutritionInput, NutritionRecommendation, NutritionResponse, ChatInput, ChatResponse, ChatApiResponse } from './hunterTypes.ts';
 
 
 
@@ -40,48 +39,104 @@ export interface CloudHealthResponse {
   isOnline: boolean;
 }
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:5000/api';
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-  try {
-    const response = await fetch(`${API_URL}${path}`, {
-      ...options,
-      signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.message ?? 'Request failed');
-    }
-    return payload;
-  } finally {
-    clearTimeout(timeoutId);
+export function getApiBaseUrl(): string {
+  if (process.env.EXPO_PUBLIC_API_URL && process.env.EXPO_PUBLIC_API_URL.trim().length > 0) {
+    const configuredUrl = process.env.EXPO_PUBLIC_API_URL.trim().replace(/\/+$/, '');
+    return configuredUrl.endsWith('/api') ? configuredUrl : `${configuredUrl}/api`;
   }
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    return `${protocol}//${window.location.hostname}:5000/api`;
+  }
+  return 'http://localhost:5000/api';
+}
+
+function isHtmlBody(rawText: string, contentType: string): boolean {
+  const trimmed = rawText.trim().toLowerCase();
+  if (contentType.includes('text/html')) return true;
+  return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html');
 }
 
 /**
- * Same as `request` but allows a custom timeout (ms).
+ * Executes a network request with timeout, content-type verification, and informative errors.
+ * Reads the body as text first so HTML/error pages never surface as raw JSON parse exceptions.
  */
-async function requestWithTimeout<T>(path: string, options?: RequestInit, timeoutMs: number = 6000): Promise<T> {
+async function requestWithTimeout<T>(path: string, options?: RequestInit, timeoutMs: number = 30000): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const callerSignal = options?.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const baseUrl = getApiBaseUrl();
+  const cleanPath = path.replace(/^\/+/, '');
+  const fullUrl = `${baseUrl}/${cleanPath}`;
+
   try {
-    const response = await fetch(`${API_URL}${path}`, {
+    const response = await fetch(fullUrl, {
       ...options,
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.message ?? 'Request failed');
+
+    const contentType = response.headers?.get?.('content-type') || '';
+    const rawText = await response.text();
+
+    if (isHtmlBody(rawText, contentType) || (contentType && !contentType.includes('application/json') && !contentType.includes('+json'))) {
+      if (response.status === 404) {
+        throw new Error(`Endpoint /${cleanPath} not found on server (HTTP 404). Check backend route configuration.`);
+      }
+      if (!response.ok) {
+        throw new Error(
+          `Server returned HTTP ${response.status} with non-JSON response: ${rawText.slice(0, 100).trim() || 'No details'}`
+        );
+      }
+      throw new Error(
+        `Server returned HTML/text instead of JSON. Ensure the HunterOS backend is running and the API base URL is correct (${baseUrl}).`
+      );
     }
-    return payload;
+
+    let payload: any;
+    try {
+      payload = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      throw new Error(
+        `Server returned invalid or malformed JSON from ${fullUrl}. Body starts with: ${rawText.slice(0, 60).trim() || '(empty)'}`
+      );
+    }
+
+    if (!response.ok) {
+      const errDetail = payload?.error || payload?.message || `Request failed with HTTP ${response.status}`;
+      throw new Error(errDetail);
+    }
+
+    return payload as T;
+  } catch (err: any) {
+    if (callerSignal?.aborted) {
+      const cancelled = new Error('Request cancelled.');
+      cancelled.name = 'AbortError';
+      throw cancelled;
+    }
+    if (timedOut || err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms. Unable to reach backend server at ${fullUrl}.`);
+    }
+    const msg = String(err?.message || '');
+    if (msg.includes('Failed to fetch') || msg.includes('Network request failed') || msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      throw new Error(`Unable to connect to HunterOS backend at ${baseUrl}. Ensure the backend server is running.`);
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
   }
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  return requestWithTimeout<T>(path, options, 30000);
 }
 
 export async function checkCloudHealth(): Promise<CloudHealthResponse> {
@@ -219,39 +274,49 @@ export function completeQuest(userId: string, questId: string) {
  * Call Gemini AI generate endpoint.
  * @param input Prompt to send.
  */
-export async function generateAI(input: { prompt: string }) {
+const DEFAULT_AI_GENERATION_TIMEOUT_MS = 60000;
+
+function getAiGenerationTimeoutMs(): number {
+  const configured = Number(process.env.EXPO_PUBLIC_AI_GENERATION_TIMEOUT_MS);
+  return Number.isInteger(configured) && configured >= 15000 && configured <= 120000
+    ? configured
+    : DEFAULT_AI_GENERATION_TIMEOUT_MS;
+}
+
+export async function generateAI(input: { prompt: string }, options: { signal?: AbortSignal; timeoutMs?: number } = {}) {
   if (!input.prompt || input.prompt.trim().length === 0) {
     throw new Error('Prompt must be a non‑empty string');
   }
-  return requestWithTimeout<ApiResponse<{ reply: string }>>('/ai/generate', {
+  return requestWithTimeout<ApiResponse<unknown>>('/ai/generate', {
     method: 'POST',
     body: JSON.stringify(input),
-  }, 10000);
+    signal: options.signal,
+  }, options.timeoutMs ?? getAiGenerationTimeoutMs());
 
 }
 
 /** Weakness‑based quest recommendations */
-export async function getWeaknessRecommendations(payload: WeaknessInput) {
-  return request<ApiResponse<WeaknessRecommendation[]>>('/weakness', {
+export async function getWeaknessRecommendations(payload: WeaknessInput): Promise<WeaknessResponse> {
+  return request<WeaknessResponse>('/weakness', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 /** Nutrition recommendations */
-export async function getNutritionRecommendations(payload: NutritionInput) {
-  return request<ApiResponse<NutritionRecommendation[]>>('/nutrition', {
+export async function getNutritionRecommendations(payload: NutritionInput): Promise<NutritionResponse> {
+  return request<NutritionResponse>('/nutrition', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 /** Chat with AI */
-export async function chatWithAI(payload: ChatInput) {
+export async function chatWithAI(payload: ChatInput): Promise<ChatApiResponse> {
   if (payload.message.length > 2000) {
     throw new Error('Message exceeds maximum length of 2000 characters');
   }
-  return request<ApiResponse<ChatResponse>>('/chat', {
+  return request<ChatApiResponse>('/chat', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

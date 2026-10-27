@@ -1,3 +1,4 @@
+import { useThemedStyles } from '../lib/AppearanceContext';
 import React, { useState } from 'react';
 import {
   Modal,
@@ -28,6 +29,7 @@ export function MorningBriefingModal({
   hunterName,
   onDismiss,
 }: MorningBriefingModalProps) {
+  const themedStyles = useThemedStyles(styles);
   const [tasks, setTasks] = useState<MorningTask[]>([
     { id: 'm1', icon: '☀', title: 'SUNLIGHT // 10 Min Natural Outdoor Light', xp: 20, stat: '+2 Health', done: false },
     { id: 'm2', icon: '💧', title: 'HYDRATION // 750ml Pure Water Matrix', xp: 20, stat: '+2 Health', done: false },
@@ -51,54 +53,54 @@ export function MorningBriefingModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.overlay}>
-        <View style={styles.modalCard}>
-          <ScrollView contentContainerStyle={styles.scroll}>
-            <View style={styles.header}>
-              <View style={styles.sysPill}>
-                <Text style={styles.sysPillText}>SYSTEM ONLINE</Text>
+      <View style={themedStyles.overlay}>
+        <View style={themedStyles.modalCard}>
+          <ScrollView contentContainerStyle={themedStyles.scroll}>
+            <View style={themedStyles.header}>
+              <View style={themedStyles.sysPill}>
+                <Text style={themedStyles.sysPillText}>SYSTEM ONLINE</Text>
               </View>
-              <Text style={styles.greeting}>GOOD MORNING, {hunterName.toUpperCase()}</Text>
-              <Text style={styles.subGreeting}>
+              <Text style={themedStyles.greeting}>GOOD MORNING, {hunterName.toUpperCase()}</Text>
+              <Text style={themedStyles.subGreeting}>
                 Today’s awakening protocol is active. Complete morning directives to initiate the 1.25x daily XP multiplier.
               </Text>
             </View>
 
-            <View style={styles.taskList}>
+            <View style={themedStyles.taskList}>
               {tasks.map((task) => (
                 <Pressable
                   key={task.id}
-                  style={[styles.taskItem, task.done && styles.taskItemDone]}
+                  style={[themedStyles.taskItem, task.done && themedStyles.taskItemDone]}
                   onPress={() => toggleTask(task.id)}
                 >
-                  <View style={styles.taskIconBox}>
-                    <Text style={styles.taskIcon}>{task.icon}</Text>
+                  <View style={themedStyles.taskIconBox}>
+                    <Text style={themedStyles.taskIcon}>{task.icon}</Text>
                   </View>
-                  <View style={styles.taskDetails}>
-                    <Text style={[styles.taskTitle, task.done && styles.taskTitleDone]}>
+                  <View style={themedStyles.taskDetails}>
+                    <Text style={[themedStyles.taskTitle, task.done && themedStyles.taskTitleDone]}>
                       {task.title}
                     </Text>
-                    <Text style={styles.taskReward}>
+                    <Text style={themedStyles.taskReward}>
                       +{task.xp} XP · {task.stat}
                     </Text>
                   </View>
-                  <View style={[styles.checkbox, task.done && styles.checkboxDone]}>
-                    <Text style={styles.checkMark}>{task.done ? '✓' : ''}</Text>
+                  <View style={[themedStyles.checkbox, task.done && themedStyles.checkboxDone]}>
+                    <Text style={themedStyles.checkMark}>{task.done ? '✓' : ''}</Text>
                   </View>
                 </Pressable>
               ))}
             </View>
 
-            <View style={styles.multiplierBox}>
-              <Text style={styles.multiplierText}>
+            <View style={themedStyles.multiplierBox}>
+              <Text style={themedStyles.multiplierText}>
                 {isAllDone
                   ? '⚡ 1.25x DAILY XP MULTIPLIER UNLOCKED'
                   : `PROGRESS: ${completedCount} / ${tasks.length} MORNING DIRECTIVES`}
               </Text>
             </View>
 
-            <Pressable style={styles.engageButton} onPress={handleFinish}>
-              <Text style={styles.engageButtonText}>
+            <Pressable style={themedStyles.engageButton} onPress={handleFinish}>
+              <Text style={themedStyles.engageButtonText}>
                 {isAllDone ? 'PROTOCOL ENGAGED ➔' : 'DISMISS & ENTER HUD'}
               </Text>
             </Pressable>

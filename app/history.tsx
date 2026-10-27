@@ -1,3 +1,4 @@
+import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
 import React, { useCallback, useState } from 'react';
 import {
   Pressable,
@@ -6,16 +7,17 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
-import { BottomNavigation } from '../components/BottomNavigation';
 import { getHunterHistory, getHunterProfile } from '../lib/hunterStorage';
 import { CompletedLog, HunterProfile } from '../lib/hunterTypes';
 
 const HISTORY_CATEGORIES = ['ALL', 'FITNESS', 'STUDY', 'MINDFULNESS', 'DISCIPLINE'] as const;
 
 export default function HistoryScreen() {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
+  const router = useRouter();
   const [logs, setLogs] = useState<CompletedLog[]>([]);
   const [profile, setProfile] = useState<HunterProfile | null>(null);
   const [selectedFilter, setSelectedFilter] = useState<string>('ALL');
@@ -41,28 +43,32 @@ export default function HistoryScreen() {
   });
 
   return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.header}>
-            <Text style={styles.systemTag}>SYSTEM // ACTIVITY AUDIT</Text>
-            <Text style={styles.title}>MISSION ARCHIVE</Text>
+    <View style={themedStyles.root}>
+      <SafeAreaView style={themedStyles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={themedStyles.content}>
+          <View style={themedStyles.header}>
+            <Pressable style={themedStyles.backBtn} onPress={() => router.replace('/profile')}>
+              <Text style={themedStyles.backBtnText}>← SYSTEM</Text>
+            </Pressable>
+            <View>
+              <Text style={themedStyles.systemTag}>SYSTEM // ACTIVITY AUDIT</Text>
+              <Text style={themedStyles.title}>MISSION ARCHIVE</Text>
+            </View>
           </View>
 
           {/* Cumulative Summary Cards */}
-          <View style={styles.summaryRow}>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>TOTAL VERIFIED XP</Text>
-              <Text style={styles.summaryVal}>{totalXp}</Text>
+          <View style={themedStyles.summaryRow}>
+            <View style={themedStyles.summaryCard}>
+              <Text style={themedStyles.summaryLabel}>TOTAL VERIFIED XP</Text>
+              <Text style={themedStyles.summaryVal}>{totalXp}</Text>
             </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>DIRECTIVES SEALED</Text>
-              <Text style={[styles.summaryVal, { color: '#38ef7d' }]}>{logs.length}</Text>
+            <View style={themedStyles.summaryCard}>
+              <Text style={themedStyles.summaryLabel}>DIRECTIVES SEALED</Text>
+              <Text style={[themedStyles.summaryVal, { color: theme.success }]}>{logs.length}</Text>
             </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>HUNTER RANK</Text>
-              <Text style={[styles.summaryVal, { color: '#fbb03b' }]}>
+            <View style={themedStyles.summaryCard}>
+              <Text style={themedStyles.summaryLabel}>HUNTER RANK</Text>
+              <Text style={[themedStyles.summaryVal, { color: theme.warning }]}>
                 {profile?.rank || 'E-RANK'}
               </Text>
             </View>
@@ -72,15 +78,15 @@ export default function HistoryScreen() {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
+            contentContainerStyle={themedStyles.filterRow}
           >
             {HISTORY_CATEGORIES.map((cat) => (
               <Pressable
                 key={cat}
-                style={[styles.filterChip, selectedFilter === cat && styles.filterChipActive]}
+                style={[themedStyles.filterChip, selectedFilter === cat && themedStyles.filterChipActive]}
                 onPress={() => setSelectedFilter(cat)}
               >
-                <Text style={[styles.filterText, selectedFilter === cat && styles.filterTextActive]}>
+                <Text style={[themedStyles.filterText, selectedFilter === cat && themedStyles.filterTextActive]}>
                   {cat}
                 </Text>
               </Pressable>
@@ -88,7 +94,7 @@ export default function HistoryScreen() {
           </ScrollView>
 
           {/* History Item Cards */}
-          <View style={styles.logsList}>
+          <View style={themedStyles.logsList}>
             {filteredLogs.map((log) => {
               const dateVal = log.completedAt ? new Date(log.completedAt) : new Date();
               const formattedDate = dateVal.toLocaleString(undefined, {
@@ -99,38 +105,37 @@ export default function HistoryScreen() {
               });
 
               return (
-                <View key={log._id} style={styles.logCard}>
-                  <View style={styles.logHeader}>
-                    <View style={styles.catPill}>
-                      <Text style={styles.catPillText}>{log.category.toUpperCase()}</Text>
+                <View key={log._id} style={themedStyles.logCard}>
+                  <View style={themedStyles.logHeader}>
+                    <View style={themedStyles.catPill}>
+                      <Text style={themedStyles.catPillText}>{log.category.toUpperCase()}</Text>
                     </View>
-                    <Text style={styles.xpEarned}>+{log.xpEarned} XP</Text>
+                    <Text style={themedStyles.xpEarned}>+{log.xpEarned} XP</Text>
                   </View>
 
-                  <Text style={styles.logTitle}>{log.title}</Text>
+                  <Text style={themedStyles.logTitle}>{log.title}</Text>
 
-                  <View style={styles.logFooter}>
-                    <Text style={styles.statRaised}>
+                  <View style={themedStyles.logFooter}>
+                    <Text style={themedStyles.statRaised}>
                       Raised {log.statRaised?.toUpperCase()} (+{log.statBonus || 3})
                     </Text>
-                    <Text style={styles.logTimestamp}>{formattedDate}</Text>
+                    <Text style={themedStyles.logTimestamp}>{formattedDate}</Text>
                   </View>
                 </View>
               );
             })}
 
             {filteredLogs.length === 0 && (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyIcon}>📜</Text>
-                <Text style={styles.emptyTitle}>NO COMPLETED DIRECTIVES FOUND</Text>
-                <Text style={styles.emptySub}>
+              <View style={themedStyles.emptyCard}>
+                <Text style={themedStyles.emptyIcon}>📜</Text>
+                <Text style={themedStyles.emptyTitle}>NO COMPLETED DIRECTIVES FOUND</Text>
+                <Text style={themedStyles.emptySub}>
                   Complete workouts, study blocks, or reflection journals to log verified progression here.
                 </Text>
               </View>
             )}
           </View>
         </ScrollView>
-        <BottomNavigation active="history" />
       </SafeAreaView>
     </View>
   );
@@ -140,7 +145,9 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#050b14' },
   safe: { flex: 1 },
   content: { padding: 18, paddingBottom: 120 },
-  header: { marginBottom: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  backBtn: { paddingVertical: 7, paddingHorizontal: 10, borderRadius: 7, backgroundColor: '#0b1e30', borderWidth: 1, borderColor: '#1c3d5e' },
+  backBtnText: { color: '#00f3ff', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
   systemTag: { color: '#00f3ff', fontSize: 10, fontWeight: '900', letterSpacing: 1.8 },
   title: { color: '#ffffff', fontSize: 24, fontWeight: '900', letterSpacing: 1.5, marginTop: 4 },
   summaryRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },

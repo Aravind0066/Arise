@@ -1,7 +1,9 @@
+import { useThemedStyles } from '../lib/AppearanceContext';
 import React from 'react';
 import { View, StyleSheet, Text } from 'react-native';
 import Svg, { Polygon, Line, Circle, G } from 'react-native-svg';
 import { HunterStats } from '../lib/hunterTypes';
+import { useAppearance } from '../lib/AppearanceContext';
 
 interface PentagonChartProps {
   stats: HunterStats;
@@ -17,6 +19,9 @@ const STAT_CONFIG = [
 ] as const;
 
 export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
+  const { theme } = useAppearance();
+  const themedStyles = useThemedStyles(styles);
+  const statColors = [theme.error, theme.accent, theme.warning, theme.success, theme.purple];
   const center = size / 2;
   const radius = size * 0.36; // Keep room for labels
 
@@ -65,7 +70,7 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
   });
 
   return (
-    <View style={[styles.container, { width: size, height: size }]}>
+    <View style={[themedStyles.container, { width: size, height: size }]}>
       <Svg width={size} height={size}>
         <G>
           {/* Concentric grid rings */}
@@ -73,8 +78,9 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
             <Polygon
               key={`grid-${i}`}
               points={ring.points}
-              fill={i === 3 ? 'rgba(7, 26, 45, 0.45)' : 'none'}
-              stroke="#183652"
+              fill={i === 3 ? theme.surfaceAlt : 'none'}
+              fillOpacity={i === 3 ? 0.45 : 1}
+              stroke={theme.border}
               strokeWidth={i === 3 ? 1.5 : 1}
               strokeDasharray={i < 3 ? '3,3' : undefined}
             />
@@ -90,20 +96,20 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
                 y1={center}
                 x2={outer.x}
                 y2={outer.y}
-                stroke="#1c4164"
+                stroke={theme.border}
                 strokeWidth={1}
               />
             );
           })}
 
           {/* Central core node */}
-          <Circle cx={center} cy={center} r={3} fill="#4887b0" />
+          <Circle cx={center} cy={center} r={3} fill={theme.textSecondary} />
 
           {/* User Stats Filled Polygon */}
           <Polygon
             points={polygonPointsStr}
-            fill="rgba(0, 243, 255, 0.22)"
-            stroke="#00f3ff"
+            fill={theme.accentDim}
+            stroke={theme.accent}
             strokeWidth={2.5}
             strokeLinejoin="round"
           />
@@ -112,7 +118,8 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
           <Polygon
             points={polygonPointsStr}
             fill="none"
-            stroke="rgba(192, 132, 252, 0.6)"
+            stroke={theme.purple}
+            opacity={0.6}
             strokeWidth={1.2}
             strokeDasharray="4,4"
           />
@@ -120,8 +127,8 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
           {/* Vertices indicator dots */}
           {dataPoints.map((p, idx) => (
             <G key={`vertex-${idx}`}>
-              <Circle cx={p.x} cy={p.y} r={6} fill="rgba(0, 243, 255, 0.3)" />
-              <Circle cx={p.x} cy={p.y} r={3.5} fill="#ffffff" stroke="#00f3ff" strokeWidth={1.5} />
+              <Circle cx={p.x} cy={p.y} r={6} fill={theme.accent} opacity={0.3} />
+              <Circle cx={p.x} cy={p.y} r={3.5} fill={theme.textPrimary} stroke={theme.accent} strokeWidth={1.5} />
             </G>
           ))}
         </G>
@@ -143,18 +150,19 @@ export function PentagonChart({ stats, size = 300 }: PentagonChartProps) {
         return (
           <View
             key={`lbl-${idx}`}
-            style={[
-              styles.statLabelWrapper,
+              style={[
+              themedStyles.statLabelWrapper,
+              { backgroundColor: theme.surface, borderColor: theme.border },
               {
                 left: Math.max(0, Math.min(size - 84, leftPos)),
                 top: Math.max(0, Math.min(size - 36, topPos)),
               },
             ]}
           >
-            <Text style={[styles.statName, { color: item.conf.color }]}>
+            <Text style={[themedStyles.statName, { color: statColors[idx] }]}>
               {item.conf.icon} {item.conf.label}
             </Text>
-            <Text style={styles.statScore}>{item.value}</Text>
+            <Text style={themedStyles.statScore}>{item.value}</Text>
           </View>
         );
       })}

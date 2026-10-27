@@ -57,6 +57,15 @@ app.use("/api/recommendations", recommendationRoutes);
 app.use("/api/nutrition", nutritionRoutes);
 app.use("/api/weakness", weaknessRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/chat", chatRoutes);
+
+// Catch-all JSON 404 for API routes so callers never receive raw HTML
+app.use("/api", (req, res) => {
+    res.status(404).json({
+        success: false,
+        error: `Endpoint not found: ${req.method} ${req.originalUrl}`,
+    });
+});
 
 const port = process.env.PORT || 5000;
 app.listen(port, () => {

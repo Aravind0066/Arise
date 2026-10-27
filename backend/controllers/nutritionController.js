@@ -27,18 +27,21 @@ async function generateNutritionRecommendations(req, res) {
     availableIngredients,
     mealType,
     prepTimeMinutes,
+    preparationTime,
   } = req.body || {};
+
+  const effectivePrepMinutes = prepTimeMinutes !== undefined ? prepTimeMinutes : preparationTime;
 
   // At least one of the optional fields must be supplied
   if (
-    fitnessGoal === undefined &&
+    (fitnessGoal === undefined || fitnessGoal === null || String(fitnessGoal).trim().length === 0) &&
     (!dietaryPreferences || dietaryPreferences.length === 0) &&
     (!allergies || allergies.length === 0) &&
     (!restrictions || restrictions.length === 0) &&
     budget === undefined &&
     (!availableIngredients || availableIngredients.length === 0) &&
     mealType === undefined &&
-    prepTimeMinutes === undefined
+    effectivePrepMinutes === undefined
   ) {
     return res.status(400).json({
       success: false,
@@ -56,7 +59,7 @@ async function generateNutritionRecommendations(req, res) {
   if (budget !== undefined) promptLines.push(`Budget per meal (approximate): ${budget}`);
   if (availableIngredients && availableIngredients.length) promptLines.push(`Available ingredients: ${availableIngredients.join(', ')}`);
   if (mealType) promptLines.push(`Meal type: ${mealType}`);
-  if (prepTimeMinutes !== undefined) promptLines.push(`Maximum preparation time (minutes): ${prepTimeMinutes}`);
+  if (effectivePrepMinutes !== undefined) promptLines.push(`Maximum preparation time (minutes): ${effectivePrepMinutes}`);
   promptLines.push('Return a JSON array. Each item must contain:');
   promptLines.push('- name (string)');
   promptLines.push('- ingredients (array of strings)');
@@ -73,33 +76,74 @@ async function generateNutritionRecommendations(req, res) {
   if (process.env.GEMINI_API_KEY) {
     const result = await geminiService.generateResponse(prompt);
     if (result.success) {
-      recommendations = result.data;
+      const raw = result.data;
+      if (Array.isArray(raw)) {
+        recommendations = raw;
+      } else if (raw && typeof raw === 'object') {
+        recommendations = Array.isArray(raw.recommendations)
+          ? raw.recommendations
+          : (Array.isArray(raw.meals) ? raw.meals : (Array.isArray(raw.data) ? raw.data : null));
+      }
     } else {
       console.warn('Gemini nutrition error:', result.error);
     }
   }
 
-  // Validation helper for a single recommendation
-  const isValidRec = (rec) => {
-    return (
-      rec &&
-      typeof rec.name === 'string' && rec.name.trim().length > 0 &&
-      Array.isArray(rec.ingredients) && rec.ingredients.length > 0 &&
-      typeof rec.portions === 'string' && rec.portions.trim().length > 0 &&
-      Array.isArray(rec.steps) && rec.steps.length > 0 &&
-      (typeof rec.nutrition === 'object' && rec.nutrition !== null) &&
-      // optional note is a string if present
-      (rec.note === undefined || typeof rec.note === 'string')
-    );
+  // Normalizer / validation helper for a single recommendation
+  const normalizeRec = (rec) => {
+    if (!rec || typeof rec !== 'object') return null;
+    const name = typeof rec.name === 'string' && rec.name.trim().length > 0 ? rec.name.trim() : null;
+    const ingredients = Array.isArray(rec.ingredients) && rec.ingredients.length > 0
+      ? rec.ingredients.map(i => String(i).trim()).filter(Boolean)
+      : null;
+    const portions = typeof rec.portions === 'string' && rec.portions.trim().length > 0
+      ? rec.portions.trim()
+      : '1 serving';
+    const steps = Array.isArray(rec.steps) && rec.steps.length > 0
+      ? rec.steps.map(s => String(s).trim()).filter(Boolean)
+      : null;
+    if (!name || !ingredients || !steps) return null;
+    const rawNutrition = (typeof rec.nutrition === 'object' && rec.nutrition !== null) ? rec.nutrition : {};
+    const normalizeNutritionValue = (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80) return value.trim();
+      return undefined;
+    };
+    const nutrition = {
+      calories: normalizeNutritionValue(rawNutrition.calories),
+      protein: normalizeNutritionValue(rawNutrition.protein),
+      approximateCalories: normalizeNutritionValue(rawNutrition.approximateCalories),
+      approximateProtein: normalizeNutritionValue(rawNutrition.approximateProtein),
+      note: typeof rawNutrition.note === 'string' ? rawNutrition.note.trim().slice(0, 200) : undefined,
+    };
+    Object.keys(nutrition).forEach((key) => nutrition[key] === undefined && delete nutrition[key]);
+    return {
+      name,
+      ingredients,
+      portions,
+      steps,
+      nutrition,
+      note: typeof rec.note === 'string' ? rec.note : undefined,
+    };
   };
 
-  // If Gemini missing or data malformed, use deterministic fallback
-  if (!Array.isArray(recommendations) || recommendations.some((r) => !isValidRec(r))) {
+  let validLiveRecs = null;
+  if (Array.isArray(recommendations)) {
+    const parsed = recommendations.map(normalizeRec);
+    if (parsed.every(r => r !== null) && parsed.length > 0) {
+      validLiveRecs = parsed;
+    }
+  }
+
+  if (validLiveRecs) {
+    recommendations = validLiveRecs;
+    usedFallback = false;
+  } else {
     usedFallback = true;
     // Simple deterministic fallback: generate up to 2 meals based on available data
     const base = fitnessGoal ? fitnessGoal.split(' ')[0] : 'Meal';
     const pref = (dietaryPreferences && dietaryPreferences[0]) || 'General';
-    const time = prepTimeMinutes || 30;
+    const time = effectivePrepMinutes || 30;
     const now = new Date();
     recommendations = [
       {
@@ -121,13 +165,12 @@ async function generateNutritionRecommendations(req, res) {
     ];
   }
 
-  // Final validation before responding
-  const allValid = Array.isArray(recommendations) && recommendations.every(isValidRec);
-  if (!allValid) {
-    return res.status(502).json({ success: false, error: 'Invalid nutrition data received from AI.' });
-  }
-
-  return res.json({ success: true, fallback: usedFallback, recommendations });
+  return res.json({
+    success: true,
+    fallback: usedFallback,
+    recommendations,
+    data: recommendations,
+  });
 }
 
 module.exports = { generateNutritionRecommendations };
