@@ -85,6 +85,7 @@ export function useAppearance(): AppearanceContextValue {
 }
 
 const COLOR_TOKEN_BY_LEGACY_HEX: Record<string, keyof ThemeColors> = {
+  '#fff': 'textPrimary',
   '#040b14': 'background', '#050b14': 'background',
   '#071626': 'surface', '#071810': 'surface', '#091828': 'surface', '#091827': 'surface',
   '#0a1d30': 'surfaceAlt', '#0b1d30': 'surfaceAlt', '#0b1e30': 'surfaceAlt', '#0b233a': 'surfaceAlt',

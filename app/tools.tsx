@@ -314,7 +314,7 @@ export default function ToolsScreen() {
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
                       <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>STRENGTH // RAID</Text>
-                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Workout</Text>
+                      <Text style={themedStyles.homeCardTitle}>Workout</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -323,7 +323,7 @@ export default function ToolsScreen() {
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
                       <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>FOCUS // PROTOCOL</Text>
-                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Pomodoro</Text>
+                      <Text style={themedStyles.homeCardTitle}>Pomodoro</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -332,7 +332,7 @@ export default function ToolsScreen() {
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
                       <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>RECOVERY // FUEL</Text>
-                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Nutrition</Text>
+                      <Text style={themedStyles.homeCardTitle}>Nutrition</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -341,7 +341,7 @@ export default function ToolsScreen() {
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
                       <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>JOURNAL // DISCIPLINE</Text>
-                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Ascend</Text>
+                      <Text style={themedStyles.homeCardTitle}>Ascend</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>

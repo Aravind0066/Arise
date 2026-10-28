@@ -493,8 +493,11 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Pressable style={themedStyles.backButton} onPress={() => router.back()}>
                 <Text style={themedStyles.backButtonText}>← BACK</Text>
               </Pressable>
-              <View style={themedStyles.rankPill}>
-                <Text style={themedStyles.rankPillText}>RECOVERY PROTOCOL</Text>
+              <View style={themedStyles.prepHeaderActions}>
+                <View style={themedStyles.rankPill}><Text style={themedStyles.rankPillText}>RECOVERY PROTOCOL</Text></View>
+                <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)} accessibilityRole="button" accessibilityLabel="Open workout history">
+                  <Text style={themedStyles.historyButtonText}>HISTORY</Text>
+                </Pressable>
               </View>
             </View>
           ) : null}
@@ -509,6 +512,7 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Pressable style={[themedStyles.startWorkoutBtn, themedStyles.disabledAction]} disabled>
                 <Text style={themedStyles.startWorkoutBtnText}>REST DAY — NO PLAN TO PREPARE</Text>
               </Pressable>
+              {embedded ? <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)}><Text style={themedStyles.historyButtonText}>VIEW WORKOUT HISTORY</Text></Pressable> : null}
             </View>
           </WorkoutFlowScroller>
         </SafeAreaView>
@@ -525,7 +529,12 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Pressable style={themedStyles.backButton} onPress={() => router.back()}>
                 <Text style={themedStyles.backButtonText}>← BACK</Text>
               </Pressable>
-              <View style={themedStyles.rankPill}><Text style={themedStyles.rankPillText}>DAILY TRAINING</Text></View>
+              <View style={themedStyles.prepHeaderActions}>
+                <View style={themedStyles.rankPill}><Text style={themedStyles.rankPillText}>DAILY TRAINING</Text></View>
+                <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)} accessibilityRole="button" accessibilityLabel="Open workout history">
+                  <Text style={themedStyles.historyButtonText}>HISTORY</Text>
+                </Pressable>
+              </View>
             </View>
           ) : null}
           <WorkoutFlowScroller embedded={embedded} contentContainerStyle={themedStyles.landingContent}>
@@ -556,9 +565,7 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
                 </Pressable>
               ) : null}
             </View>
-            <Pressable style={themedStyles.cancelRequestBtn} onPress={() => router.push('/workout-history' as any)}>
-              <Text style={themedStyles.cancelRequestText}>VIEW WORKOUT HISTORY</Text>
-            </Pressable>
+            {embedded ? <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)}><Text style={themedStyles.historyButtonText}>VIEW WORKOUT HISTORY</Text></Pressable> : null}
           </WorkoutFlowScroller>
         </SafeAreaView>
       </View>
@@ -586,8 +593,11 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Pressable style={themedStyles.backButton} onPress={() => router.back()}>
                 <Text style={themedStyles.backButtonText}>✕ ABORT</Text>
               </Pressable>
-              <View style={themedStyles.rankPill}>
-                <Text style={themedStyles.rankPillText}>{routine.codeName}</Text>
+              <View style={themedStyles.prepHeaderActions}>
+                <View style={themedStyles.rankPill}><Text style={themedStyles.rankPillText}>{routine.codeName}</Text></View>
+                <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)} accessibilityRole="button" accessibilityLabel="Open workout history">
+                  <Text style={themedStyles.historyButtonText}>HISTORY</Text>
+                </Pressable>
               </View>
             </View>
           ) : null}
@@ -612,6 +622,7 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               </Pressable>
               {isPlanLoading ? <Pressable style={themedStyles.cancelRequestBtn} onPress={cancelPlanRequest}><Text style={themedStyles.cancelRequestText}>CANCEL REQUEST</Text></Pressable> : null}
               {!isPlanLoading && planSource !== 'rest' ? <Pressable style={themedStyles.retryPlanBtn} onPress={() => prepareTodayWorkout(true)}><Text style={themedStyles.retryPlanText}>{planSource === 'fallback' ? 'RETRY AI GENERATION' : 'GENERATE REPLACEMENT PLAN'}</Text></Pressable> : null}
+              {embedded ? <Pressable style={themedStyles.historyButton} onPress={() => router.push('/workout-history' as any)}><Text style={themedStyles.historyButtonText}>VIEW WORKOUT HISTORY</Text></Pressable> : null}
             </View>
             {/* Mission Dossier Card */}
             <View style={themedStyles.missionCard}>
@@ -1147,6 +1158,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 18,
     paddingVertical: 12,
+    gap: 8,
+  },
+  prepHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+  },
+  historyButton: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#00f3ff',
+    backgroundColor: '#0b1e30',
+  },
+  historyButtonText: {
+    color: '#00f3ff',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
   },
   backButton: {
     paddingVertical: 6,
