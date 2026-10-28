@@ -51,7 +51,7 @@ export default function HistoryScreen() {
               <Text style={themedStyles.backBtnText}>← SYSTEM</Text>
             </Pressable>
             <View>
-              <Text style={themedStyles.systemTag}>SYSTEM // ACTIVITY AUDIT</Text>
+              <Text style={themedStyles.systemTag}>Activity History</Text>
               <Text style={themedStyles.title}>MISSION ARCHIVE</Text>
             </View>
           </View>

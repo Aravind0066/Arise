@@ -22,7 +22,7 @@ export interface AiGenerateInput {
 }
 
 /** Response shape for AI generate */
-export type AiGenerateResponse = ApiResponse<{ reply: string }>;
+export type AiGenerateResponse = ApiResponse<unknown> & { provider?: string; model?: string; errorType?: string };
 
 /** Input for weakness recommendation endpoint */
 export interface WeaknessInput {
@@ -52,6 +52,8 @@ export interface WeaknessResponse {
   recommendations?: WeaknessRecommendation[];
   data?: WeaknessRecommendation[];
   fallback?: boolean;
+  source?: string;
+  fallbackReason?: string;
   error?: string;
 }
 
@@ -66,6 +68,8 @@ export interface NutritionInput {
   mealType?: string;
   preparationTime?: number; // minutes
   prepTimeMinutes?: number; // minutes
+  mealsToPlan?: 'one' | 'full-day';
+  context?: Record<string, unknown>;
 }
 
 /** Single nutrition recommendation */
@@ -79,21 +83,59 @@ export interface NutritionRecommendation {
     protein?: number | string; // grams or provider-formatted amount
     approximateCalories?: number | string;
     approximateProtein?: number | string;
+    carbohydrates?: number | string;
+    fat?: number | string;
     note?: string;
   };
+  preparationTimeMinutes?: number;
+  substitutions?: string[];
+  goalAlignment?: string;
   note?: string;
+}
+
+export interface NutritionHistoryRecord {
+  id: string;
+  createdAt: string;
+  fitnessGoal?: string;
+  dietaryPreferences?: string[];
+  preparationTime?: number;
+  fallback: boolean;
+  source?: string;
+  recommendations: NutritionRecommendation[];
+  inputs?: NutritionInput;
+}
+
+export type WorkoutMode = 'home' | 'gym' | 'bodyweight' | 'custom';
+export interface WorkoutPreferences { mode: WorkoutMode; equipment: string[] }
+
+export interface HunterChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'error';
+  content: string;
+  createdAt: string;
+  fallback?: boolean;
+}
+
+export interface HunterChatConversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: HunterChatMessage[];
 }
 
 export type NutritionResponse =
   | {
       success: true;
       fallback: boolean;
+      source?: string;
       recommendations: NutritionRecommendation[];
       data: NutritionRecommendation[];
     }
   | {
       success: false;
       error: string;
+      errorType?: string;
       fallback?: boolean;
       recommendations?: never;
       data?: never;
@@ -117,6 +159,8 @@ export interface ChatApiResponse {
   data?: ChatResponse;
   fallback?: boolean;
   error?: string;
+  errorType?: string;
+  source?: string;
 }
 
 export interface HunterStats {
@@ -165,6 +209,7 @@ export interface HunterQuest {
   generatedBy: 'system' | 'user' | 'ai';
   status: 'active' | 'completed' | 'expired';
   completedAt?: string;
+  fallback?: boolean;
 }
 
 export interface CompletedLog {
@@ -175,6 +220,7 @@ export interface CompletedLog {
   xpEarned: number;
   statRaised: StatType;
   statBonus: number;
+  verificationNote?: string;
   completedAt: string;
 }
 
@@ -186,6 +232,10 @@ export interface WorkoutLog {
   totalExercises: number;
   durationSeconds: number;
   difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
+  xpEarned?: number;
+  sets?: number;
+  reps?: number;
+  weightKg?: number;
   notes?: string;
   createdAt: string;
 }

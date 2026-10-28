@@ -1,10 +1,12 @@
 import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
 import React, { useCallback, useState } from 'react';
 import {
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -19,12 +21,16 @@ import {
   getHunterQuests,
   getHunterStats,
   getWorkoutLogs,
+  getGoalProgress,
+  saveGoalProgress,
   saveHunterProfile,
   saveHunterStats,
   XP_PER_LEVEL,
 } from '../lib/hunterStorage';
 import { CompletedLog, HunterProfile, HunterQuest, HunterStats, WorkoutLog } from '../lib/hunterTypes';
 import { getWorkoutActivity } from '../lib/workoutActivity';
+import { addGoalProgressEntry, getLatestGoalEntry, updateGoalConfiguration, type GoalProgress } from '../lib/goalProgress';
+import { GoalProgressGraph } from '../components/GoalProgressGraph';
 
 export default function HomeScreen() {
   const { theme } = useAppearance();
@@ -44,6 +50,15 @@ export default function HomeScreen() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showMorningBriefing, setShowMorningBriefing] = useState(false);
   const [systemNotification, setSystemNotification] = useState('');
+  const [goalProgress, setGoalProgress] = useState<GoalProgress | null>(null);
+  const [goalEditorVisible, setGoalEditorVisible] = useState(false);
+  const [goalTitleDraft, setGoalTitleDraft] = useState('');
+  const [goalTargetDraft, setGoalTargetDraft] = useState('');
+  const [goalUnitDraft, setGoalUnitDraft] = useState('');
+  const [goalDateDraft, setGoalDateDraft] = useState('');
+  const [progressDraft, setProgressDraft] = useState('');
+  const [goalError, setGoalError] = useState('');
+  const [goalSaving, setGoalSaving] = useState(false);
 
   const loadData = useCallback(async () => {
     const p = await getHunterProfile();
@@ -57,12 +72,14 @@ export default function HomeScreen() {
     const q = await getHunterQuests();
     const h = await getHunterHistory();
     const w = await getWorkoutLogs();
+    const goal = await getGoalProgress(p.primaryGoal);
     setShowOnboarding(false);
     setProfile(p);
     setStats(s);
     setQuests(q);
     setHistory(h);
     setWorkoutLogs(w);
+    setGoalProgress(goal);
   }, []);
 
   useFocusEffect(
@@ -77,13 +94,72 @@ export default function HomeScreen() {
     const q = await getHunterQuests();
     const h = await getHunterHistory();
     const w = await getWorkoutLogs();
+    const goal = await getGoalProgress(newProfile.primaryGoal);
     setQuests(q);
     setHistory(h);
     setWorkoutLogs(w);
+    setGoalProgress(goal);
     setShowOnboarding(false);
     setSystemNotification(`HUNTER AWAKENED: ${newProfile.name} // [ ${newProfile.title} ]`);
     setTimeout(() => setSystemNotification(''), 5000);
   };
+
+  const openGoalEditor = () => {
+    if (!goalProgress) return;
+    setGoalTitleDraft(goalProgress.title);
+    setGoalTargetDraft(goalProgress.targetValue == null ? '' : String(goalProgress.targetValue));
+    setGoalUnitDraft(goalProgress.unit);
+    setGoalDateDraft(goalProgress.targetDate ?? '');
+    setProgressDraft('');
+    setGoalError('');
+    setGoalEditorVisible(true);
+  };
+
+  const handleSaveGoal = async () => {
+    if (!goalProgress || goalSaving) return;
+    setGoalSaving(true);
+    setGoalError('');
+    try {
+      const updated = updateGoalConfiguration(goalProgress, {
+        title: goalTitleDraft,
+        target: goalTargetDraft,
+        unit: goalUnitDraft,
+        targetDate: goalDateDraft,
+      });
+      await saveGoalProgress(updated);
+      if (profile) {
+        const updatedProfile = { ...profile, primaryGoal: updated.title };
+        await saveHunterProfile(updatedProfile);
+        setProfile(updatedProfile);
+      }
+      setGoalProgress(updated);
+      setGoalTitleDraft(updated.title);
+      setGoalError('Goal saved on this device.');
+    } catch (error) {
+      setGoalError(error instanceof Error ? error.message : 'Could not save this goal.');
+    } finally {
+      setGoalSaving(false);
+    }
+  };
+
+  const handleRecordGoalProgress = async () => {
+    if (!goalProgress || goalSaving) return;
+    setGoalSaving(true);
+    setGoalError('');
+    try {
+      const updated = addGoalProgressEntry(goalProgress, progressDraft);
+      await saveGoalProgress(updated);
+      setGoalProgress(updated);
+      setProgressDraft('');
+      setGoalError('Progress measurement saved.');
+    } catch (error) {
+      setGoalError(error instanceof Error ? error.message : 'Could not save this measurement.');
+    } finally {
+      setGoalSaving(false);
+    }
+  };
+
+  const goalRecordDisabled = goalSaving || !progressDraft.trim();
 
   const handleMorningDismiss = async (completedCount: number) => {
     setShowMorningBriefing(false);
@@ -138,6 +214,7 @@ export default function HomeScreen() {
   // Single featured actionable quest
   const featuredQuest = activeQuests[0] || null;
   const workoutActivity = getWorkoutActivity(workoutLogs);
+  const latestGoalEntry = goalProgress ? getLatestGoalEntry(goalProgress.entries) : null;
 
   // Next level unlock description
   const nextLevel = currentLevel + 1;
@@ -214,6 +291,41 @@ export default function HomeScreen() {
               <Text style={themedStyles.nextRewardText}>{nextRewardText}</Text>
             </View>
           </View>
+
+          {goalProgress ? (
+            <Pressable style={themedStyles.goalCard} onPress={openGoalEditor} accessibilityRole="button" accessibilityLabel="Edit goal and record progress">
+              <View style={themedStyles.goalCardHeader}>
+                <View style={themedStyles.goalCardHeading}>
+                  <Text style={themedStyles.goalEyebrow}>GOALS</Text>
+                  <Text style={themedStyles.goalTitle}>{goalProgress.title}</Text>
+                </View>
+                <Text style={themedStyles.goalEdit}>EDIT ›</Text>
+              </View>
+              <View style={themedStyles.goalMetrics}>
+                <View style={themedStyles.goalMetric}>
+                  <Text style={themedStyles.goalMetricLabel}>LATEST MEASUREMENT</Text>
+                  <Text style={themedStyles.goalMetricValue}>
+                    {latestGoalEntry
+                      ? `${latestGoalEntry.value}${goalProgress.unit ? ` ${goalProgress.unit}` : ''}`
+                      : 'Not recorded'}
+                  </Text>
+                </View>
+                <View style={themedStyles.goalMetric}>
+                  <Text style={themedStyles.goalMetricLabel}>TARGET</Text>
+                  <Text style={themedStyles.goalMetricValue}>
+                    {goalProgress.targetValue == null
+                      ? 'Not set'
+                      : `${goalProgress.targetValue}${goalProgress.unit ? ` ${goalProgress.unit}` : ''}`}
+                  </Text>
+                </View>
+                <View style={themedStyles.goalMetric}>
+                  <Text style={themedStyles.goalMetricLabel}>TARGET DATE</Text>
+                  <Text style={themedStyles.goalMetricValue}>{goalProgress.targetDate || 'Not set'}</Text>
+                </View>
+              </View>
+              <GoalProgressGraph entries={goalProgress.entries} targetValue={goalProgress.targetValue} unit={goalProgress.unit} />
+            </Pressable>
+          ) : null}
 
           {/* Morning System Protocol Banner */}
           <Pressable
@@ -377,6 +489,66 @@ export default function HomeScreen() {
           visible={showOnboarding}
           onComplete={handleOnboardingComplete}
         />
+
+        <Modal visible={goalEditorVisible} transparent animationType="fade" onRequestClose={() => setGoalEditorVisible(false)}>
+          <View style={themedStyles.goalModalBackdrop}>
+            <ScrollView contentContainerStyle={themedStyles.goalModalScroll} keyboardShouldPersistTaps="handled">
+              <View style={themedStyles.goalModalCard}>
+                <View style={themedStyles.goalModalHeader}>
+                  <View>
+                    <Text style={themedStyles.goalEyebrow}>LOCAL GOAL TRACKING</Text>
+                    <Text style={themedStyles.goalModalTitle}>EDIT GOAL</Text>
+                  </View>
+                  <Pressable onPress={() => setGoalEditorVisible(false)} accessibilityLabel="Close goal editor">
+                    <Text style={themedStyles.goalClose}>✕</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={themedStyles.goalInputLabel}>GOAL TITLE</Text>
+                <TextInput value={goalTitleDraft} onChangeText={setGoalTitleDraft} style={themedStyles.goalInput} maxLength={100} />
+                <View style={themedStyles.goalFormRow}>
+                  <View style={themedStyles.goalFormColumn}>
+                    <Text style={themedStyles.goalInputLabel}>TARGET VALUE</Text>
+                    <TextInput value={goalTargetDraft} onChangeText={setGoalTargetDraft} style={themedStyles.goalInput} keyboardType="decimal-pad" placeholder="Optional" placeholderTextColor={theme.textSecondary} />
+                  </View>
+                  <View style={themedStyles.goalFormColumn}>
+                    <Text style={themedStyles.goalInputLabel}>UNIT</Text>
+                    <TextInput value={goalUnitDraft} onChangeText={setGoalUnitDraft} style={themedStyles.goalInput} maxLength={20} placeholder="kg, km, reps…" placeholderTextColor={theme.textSecondary} />
+                  </View>
+                </View>
+                <Text style={themedStyles.goalInputLabel}>TARGET DATE</Text>
+                <TextInput value={goalDateDraft} onChangeText={setGoalDateDraft} style={themedStyles.goalInput} placeholder="YYYY-MM-DD (optional)" placeholderTextColor={theme.textSecondary} />
+                <Pressable style={themedStyles.goalPrimaryButton} onPress={handleSaveGoal} disabled={goalSaving}>
+                  <Text style={themedStyles.goalPrimaryButtonText}>{goalSaving ? 'SAVING…' : 'SAVE GOAL'}</Text>
+                </Pressable>
+
+                <View style={themedStyles.goalDivider} />
+                <Text style={themedStyles.goalSectionTitle}>RECORD PROGRESS</Text>
+                <Text style={themedStyles.goalHint}>Save an actual measurement. The graph uses only measurements you record.</Text>
+                <View style={themedStyles.goalRecordRow}>
+                  <TextInput value={progressDraft} onChangeText={setProgressDraft} style={[themedStyles.goalInput, themedStyles.goalProgressInput]} keyboardType="decimal-pad" placeholder={goalProgress?.unit ? `Value (${goalProgress.unit})` : 'Measurement'} placeholderTextColor={theme.textSecondary} />
+                  <Pressable
+                    style={[
+                      themedStyles.goalRecordButton,
+                      {
+                        backgroundColor: goalRecordDisabled ? theme.surfaceAlt : theme.buttonBackground,
+                        borderColor: goalRecordDisabled ? theme.border : theme.buttonBackground,
+                      },
+                    ]}
+                    onPress={handleRecordGoalProgress}
+                    disabled={goalRecordDisabled}
+                  >
+                    <Text style={[themedStyles.goalRecordButtonText, { color: goalRecordDisabled ? theme.textPrimary : theme.buttonText }]}>RECORD</Text>
+                  </Pressable>
+                </View>
+                {goalError ? <Text style={themedStyles.goalFeedback}>{goalError}</Text> : null}
+                <Pressable style={themedStyles.goalSecondaryButton} onPress={() => setGoalEditorVisible(false)}>
+                  <Text style={themedStyles.goalSecondaryButtonText}>DONE</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </Modal>
 
         <BottomNavigation active="home" />
       </SafeAreaView>
@@ -823,4 +995,43 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 2,
   },
+  goalCard: {
+    backgroundColor: '#071626',
+    borderWidth: 1,
+    borderColor: '#163b5e',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+  },
+  goalCardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  goalCardHeading: { flex: 1 },
+  goalEyebrow: { color: '#00f3ff', fontSize: 9, fontWeight: '900', letterSpacing: 1.5 },
+  goalTitle: { color: '#f1f8ff', fontSize: 16, lineHeight: 21, fontWeight: '900', marginTop: 4 },
+  goalEdit: { color: '#00f3ff', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  goalMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#183652' },
+  goalMetric: { flexGrow: 1, flexBasis: '28%' },
+  goalMetricLabel: { color: '#6486a1', fontSize: 8, fontWeight: '900', letterSpacing: 0.7 },
+  goalMetricValue: { color: '#d7e9f5', fontSize: 11, fontWeight: '800', marginTop: 4 },
+  goalModalBackdrop: { flex: 1, backgroundColor: 'rgba(0, 4, 10, 0.82)', justifyContent: 'center', padding: 16 },
+  goalModalScroll: { flexGrow: 1, justifyContent: 'center', paddingVertical: 20 },
+  goalModalCard: { width: '100%', maxWidth: 540, alignSelf: 'center', backgroundColor: '#071626', borderWidth: 1, borderColor: '#00cbd4', borderRadius: 16, padding: 18 },
+  goalModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  goalModalTitle: { color: '#f1f8ff', fontSize: 18, fontWeight: '900', letterSpacing: 0.6, marginTop: 4 },
+  goalClose: { color: '#a8c5df', fontSize: 20, fontWeight: '800', padding: 6 },
+  goalInputLabel: { color: '#7e9ab0', fontSize: 9, fontWeight: '900', letterSpacing: 0.8, marginBottom: 6, marginTop: 10 },
+  goalInput: { minHeight: 42, borderWidth: 1, borderColor: '#1c3d5e', borderRadius: 8, backgroundColor: '#091827', color: '#f1f8ff', paddingHorizontal: 11, paddingVertical: 9, fontSize: 13 },
+  goalFormRow: { flexDirection: 'row', gap: 10 },
+  goalFormColumn: { flex: 1 },
+  goalPrimaryButton: { minHeight: 42, justifyContent: 'center', alignItems: 'center', marginTop: 14, borderRadius: 8, backgroundColor: '#00cbd4', paddingHorizontal: 14 },
+  goalPrimaryButtonText: { color: '#03121c', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  goalDivider: { height: 1, backgroundColor: '#183652', marginVertical: 18 },
+  goalSectionTitle: { color: '#edf8ff', fontSize: 12, fontWeight: '900', letterSpacing: 0.8 },
+  goalHint: { color: '#7894aa', fontSize: 11, lineHeight: 16, marginTop: 5 },
+  goalRecordRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  goalProgressInput: { flex: 1 },
+  goalRecordButton: { minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#00cbd4', borderRadius: 8, paddingHorizontal: 13 },
+  goalRecordButtonText: { color: '#00dce8', fontSize: 9, fontWeight: '900', letterSpacing: 0.6 },
+  goalFeedback: { color: '#8debd0', fontSize: 11, marginTop: 10, lineHeight: 16 },
+  goalSecondaryButton: { minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, marginTop: 8, borderWidth: 1, borderColor: '#163b5e', borderRadius: 8, backgroundColor: '#071626' },
+  goalSecondaryButtonText: { color: '#00f3ff', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
 });

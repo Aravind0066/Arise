@@ -7,6 +7,10 @@ import {
   getWeaknessRecommendations,
   getNutritionRecommendations,
   chatWithAI,
+  generateQuests,
+  checkCloudHealth,
+  getExpoDevelopmentApiBaseUrl,
+  getSafeApiBaseUrlForDiagnostics,
 } from '../lib/api.ts';
 
 const originalFetch = global.fetch;
@@ -22,6 +26,42 @@ describe('API wrapper', () => {
     assert.equal(getApiBaseUrl(), 'http://127.0.0.1:5000/api');
     if (previous === undefined) delete process.env.EXPO_PUBLIC_API_URL;
     else process.env.EXPO_PUBLIC_API_URL = previous;
+  });
+
+  test('native Expo development requests target the machine hosting the Expo packager', () => {
+    assert.equal(getExpoDevelopmentApiBaseUrl('192.168.1.25:8081'), 'http://192.168.1.25:5000/api');
+    assert.equal(getExpoDevelopmentApiBaseUrl('bad host'), null);
+    assert.equal(getExpoDevelopmentApiBaseUrl(undefined), null);
+  });
+
+  test('safe diagnostics show the API endpoint without URL credentials or query secrets', () => {
+    const previous = process.env.EXPO_PUBLIC_API_URL;
+    process.env.EXPO_PUBLIC_API_URL = 'https://user:pass@example.test/api?token=private#fragment';
+    try {
+      assert.equal(getSafeApiBaseUrlForDiagnostics(), 'https://example.test/api');
+    } finally {
+      if (previous === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+      else process.env.EXPO_PUBLIC_API_URL = previous;
+    }
+  });
+
+  test('production requires an explicit public HTTPS API URL', () => {
+    const previousUrl = process.env.EXPO_PUBLIC_API_URL;
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      delete process.env.EXPO_PUBLIC_API_URL;
+      assert.throws(() => getApiBaseUrl(), /must be set.*production/);
+      process.env.EXPO_PUBLIC_API_URL = 'http://localhost:5000';
+      assert.throws(() => getApiBaseUrl(), /public HTTPS/);
+      process.env.EXPO_PUBLIC_API_URL = 'https://api.example.com/';
+      assert.equal(getApiBaseUrl(), 'https://api.example.com/api');
+    } finally {
+      if (previousUrl === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+      else process.env.EXPO_PUBLIC_API_URL = previousUrl;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   test('generateAI returns reply on success', async () => {
@@ -115,8 +155,97 @@ describe('API wrapper', () => {
 
     await assert.rejects(
       chatWithAI({ message: 'Hello' }),
-      /Unable to connect to HunterOS backend/
+      { kind: 'backend', message: /Could not connect to the HunterOS backend/, diagnostic: /API http:\/\/localhost:5000\/api · fetch error: fetch failed/ }
     );
+  });
+
+  test('reports backend connectivity separately from Ollama model readiness', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: true, status: 200, headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({
+        status: 'healthy', backendStatus: 'available', uptimeSeconds: 1, timestamp: new Date().toISOString(),
+        cloudService: 'local', database: 'device local',
+        aiProvider: { status: 'model_missing', model: 'qwen3:4b', message: 'Configured model is not installed.' },
+      })),
+    });
+    const result = await checkCloudHealth();
+    assert.equal(result.isOnline, true);
+    assert.equal(result.backendStatus, 'available');
+    assert.equal(result.aiProvider.status, 'model_missing');
+    assert.equal(result.aiProvider.message, 'Configured model is not installed.');
+  });
+
+  test('preserves actionable Ollama model and timeout diagnostics from the backend', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: false, status: 502, headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({ success: false, errorType: 'MODEL_NOT_FOUND', error: 'Configured Ollama model "qwen3:4b" is not installed.' })),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), { kind: 'ai', message: /Configured Ollama model.*not installed/ });
+    global.fetch = () => Promise.resolve({
+      ok: false, status: 504, headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({ success: false, errorType: 'GENERATION_TIMEOUT', error: 'Ollama request timed out after 120000ms.' })),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), { kind: 'ai', message: /timed out after 120000ms/ });
+  });
+
+  test('does not present a backend fallback as a live Hunter AI answer', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({ success: true, fallback: true, reply: 'Local fallback' })),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), { kind: 'ai' });
+  });
+
+  test('rejects nutrition fallback and preserves explicit fallback markers for quest generation', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({
+        success: true,
+        fallback: true,
+        source: 'hunteros-engine',
+        recommendations: [],
+        data: [
+          { title: 'Local quest one', description: 'Marked fallback.', durationMinutes: 25, xpReward: 40 },
+          { title: 'Local quest two', description: 'Marked fallback.', durationMinutes: 20, xpReward: 30 },
+          { title: 'Local quest three', description: 'Marked fallback.', durationMinutes: 10, xpReward: 20 },
+        ],
+      })),
+    });
+    await assert.rejects(getNutritionRecommendations({ fitnessGoal: 'Strength' }), { kind: 'ai' });
+    const weakness = await getWeaknessRecommendations({ goals: [], stats: {}, recentQuests: [] });
+    assert.equal(weakness.fallback, true);
+    assert.equal(weakness.source, 'hunteros-engine');
+    const quests = await generateQuests({ goal: 'Study', category: 'Study', availableMinutes: 30, difficulty: 'Beginner' });
+    assert.equal(quests.fallback, true);
+    assert.equal(quests.source, 'hunteros-engine');
+    assert.ok(quests.data.every((quest) => quest.generatedBy === 'system' && quest.fallback));
+  });
+
+  test('classifies provider quota responses separately from server failures', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: false,
+      status: 429,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({ error: 'Quota exceeded' })),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), {
+      kind: 'ai',
+      message: 'Hunter AI is temporarily unavailable. Please try again later.',
+    });
+  });
+
+  test('classifies an unlabelled backend gateway failure as a server error', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: false,
+      status: 502,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify({ error: 'Backend gateway is unavailable' })),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), { kind: 'backend' });
   });
 
   test('success mocks without content-type header still parse JSON bodies', async () => {

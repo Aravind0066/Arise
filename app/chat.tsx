@@ -17,6 +17,19 @@ import { BottomNavigation } from '../components/BottomNavigation';
 import { chatWithAI } from '../lib/api';
 import type { ChatInput } from '../lib/hunterTypes';
 import { clearChatDraftIfMatches, getChatDraft, setChatDraft } from '../lib/chatDraftStore';
+import { useInternetConnectivity } from '../lib/ConnectivityContext';
+import { onlineRequestErrorMessage } from '../lib/connectivityRules';
+import { OfflineNotice } from '../components/OfflineNotice';
+import { normalizeChatReply, sanitizeStoredAssistantReply } from '../lib/chatResponse';
+import {
+  appendChatMessage,
+  deleteChatConversation,
+  getActiveChatId,
+  getChatConversations,
+  saveChatConversation,
+  setActiveChatId,
+} from '../lib/hunterStorage';
+import type { HunterChatConversation, HunterChatMessage } from '../lib/hunterTypes';
 
 type MessageRole = 'user' | 'assistant' | 'error';
 
@@ -25,6 +38,7 @@ interface Message {
   role: MessageRole;
   content: string;
   isFallback?: boolean;
+  createdAt?: string;
 }
 
 function renderInlineMarkdown(text: string, keyPrefix: string, boldStyle: object): React.ReactNode[] {
@@ -39,8 +53,17 @@ function renderInlineMarkdown(text: string, keyPrefix: string, boldStyle: object
   );
 }
 
+function safeChatErrorText(value: string): string {
+  if (value.length > 360 || /(?:^|\n)\s*at\s+\S+|stack trace|node_modules\/|\bTypeError:|\bReferenceError:/i.test(value)) {
+    return 'Hunter AI could not complete that request. Please retry.';
+  }
+  return value;
+}
+
 function AssistantMessage({ content }: { content: string }) {
+  const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
+  const themedBoldStyle = [themedStyles.markdownBold, { color: theme.textPrimary }];
   const blocks: React.ReactNode[] = [];
   let listItems: { text: string; ordered: boolean }[] = [];
 
@@ -52,9 +75,9 @@ function AssistantMessage({ content }: { content: string }) {
       <View key={`list-${blocks.length}`} style={themedStyles.markdownList}>
         {items.map((item, index) => (
           <View key={`item-${index}`} style={themedStyles.markdownListRow}>
-            <Text style={themedStyles.aiBubbleText}>{item.ordered ? `${index + 1}.` : '•'}</Text>
-            <Text style={[themedStyles.aiBubbleText, themedStyles.markdownListText]}>
-              {renderInlineMarkdown(item.text, `list-${blocks.length}-${index}`, themedStyles.markdownBold)}
+            <Text style={[themedStyles.aiBubbleText, { color: theme.textPrimary }]}>{item.ordered ? `${index + 1}.` : '•'}</Text>
+            <Text style={[themedStyles.aiBubbleText, themedStyles.markdownListText, { color: theme.textPrimary }]}>
+              {renderInlineMarkdown(item.text, `list-${blocks.length}-${index}`, themedBoldStyle)}
             </Text>
           </View>
         ))}
@@ -75,14 +98,14 @@ function AssistantMessage({ content }: { content: string }) {
     const headingMatch = line.match(/^\s{0,3}(#{1,3})\s+(.+?)\s*#*\s*$/);
     if (headingMatch) {
       blocks.push(
-        <Text key={`heading-${index}`} style={[themedStyles.aiBubbleText, themedStyles.markdownHeading]}>
-          {renderInlineMarkdown(headingMatch[2], `heading-${index}`, themedStyles.markdownBold)}
+        <Text key={`heading-${index}`} style={[themedStyles.aiBubbleText, themedStyles.markdownHeading, { color: theme.accent }]}>
+          {renderInlineMarkdown(headingMatch[2], `heading-${index}`, themedBoldStyle)}
         </Text>
       );
     } else if (line.trim()) {
       blocks.push(
-        <Text key={`line-${index}`} style={themedStyles.aiBubbleText}>
-          {renderInlineMarkdown(line, `line-${index}`, themedStyles.markdownBold)}
+        <Text key={`line-${index}`} style={[themedStyles.aiBubbleText, { color: theme.textPrimary }]}>
+          {renderInlineMarkdown(line, `line-${index}`, themedBoldStyle)}
         </Text>
       );
     } else {
@@ -90,7 +113,7 @@ function AssistantMessage({ content }: { content: string }) {
     }
   });
   flushList();
-  return <View style={themedStyles.markdownMessage}>{blocks}</View>;
+  return <View style={[themedStyles.markdownMessage, { maxWidth: '100%' }]}>{blocks}</View>;
 }
 
 const WELCOME_TEXT =
@@ -107,6 +130,7 @@ export default function ChatScreen() {
   const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
   const router = useRouter();
+  const { status: internetStatus, refresh } = useInternetConnectivity();
   const scrollRef = useRef<ScrollView>(null);
   const screenProgress = useRef(new Animated.Value(0)).current;
 
@@ -119,7 +143,74 @@ export default function ChatScreen() {
   ]);
   const [input, setInput] = useState(getChatDraft());
   const [sending, setSending] = useState(false);
+  const [conversations, setConversations] = useState<HunterChatConversation[]>([]);
+  const [activeConversationId, setActiveConversationIdState] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [chatReady, setChatReady] = useState(false);
   const sendingRef = useRef(false);
+
+  const toDisplayMessage = useCallback((message: HunterChatMessage): Message => ({
+    ...message,
+    content: message.role === 'assistant'
+      ? sanitizeStoredAssistantReply(message.content)
+      : message.role === 'error' ? safeChatErrorText(message.content) : message.content,
+    isFallback: message.fallback,
+  }), []);
+
+  const restoreChats = useCallback(async () => {
+    const [saved, savedActive] = await Promise.all([getChatConversations(), getActiveChatId()]);
+    setConversations(saved);
+    const active = saved.find((item) => item.id === savedActive) || saved[0];
+    if (active) {
+      setActiveConversationIdState(active.id);
+      await setActiveChatId(active.id);
+      setMessages(active.messages.length ? active.messages.map(toDisplayMessage) : [{ id: 'welcome', role: 'assistant', content: WELCOME_TEXT }]);
+    } else {
+      setActiveConversationIdState(null);
+      setMessages([{ id: 'welcome', role: 'assistant', content: WELCOME_TEXT }]);
+    }
+    setChatReady(true);
+  }, [toDisplayMessage]);
+
+  useEffect(() => { void restoreChats(); }, [restoreChats]);
+
+  const newChat = useCallback(async () => {
+    if (sendingRef.current) return;
+    const now = new Date().toISOString();
+    const conversation: HunterChatConversation = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      title: 'New chat', createdAt: now, updatedAt: now, messages: [],
+    };
+    await saveChatConversation(conversation);
+    await setActiveChatId(conversation.id);
+    setConversations((previous) => [conversation, ...previous]);
+    setActiveConversationIdState(conversation.id);
+    setMessages([{ id: 'welcome', role: 'assistant', content: WELCOME_TEXT }]);
+    setSidebarOpen(false);
+  }, []);
+
+  const selectConversation = useCallback(async (conversation: HunterChatConversation) => {
+    if (sendingRef.current) return;
+    await setActiveChatId(conversation.id);
+    setActiveConversationIdState(conversation.id);
+    setMessages(conversation.messages.length
+      ? conversation.messages.map(toDisplayMessage)
+      : [{ id: 'welcome', role: 'assistant', content: WELCOME_TEXT }]);
+    setSidebarOpen(false);
+  }, [toDisplayMessage]);
+
+  const removeConversation = useCallback(async (id: string) => {
+    const remaining = await deleteChatConversation(id);
+    setConversations(remaining);
+    if (activeConversationId === id) {
+      const next = remaining[0];
+      setActiveConversationIdState(next?.id || null);
+      await setActiveChatId(next?.id || null);
+      setMessages(next?.messages.length
+        ? next.messages.map(toDisplayMessage)
+        : [{ id: 'welcome', role: 'assistant', content: WELCOME_TEXT }]);
+    }
+  }, [activeConversationId, toDisplayMessage]);
 
   useEffect(() => {
     Animated.timing(screenProgress, {
@@ -137,30 +228,50 @@ export default function ChatScreen() {
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || sendingRef.current) return;
+      if (!trimmed || sendingRef.current || !chatReady) return;
+      sendingRef.current = true;
+      setSending(true);
 
-      // Build history from current messages (max 10 entries, skip welcome/error)
+      let conversationId = activeConversationId;
       const historyEntries = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .filter((m) => m.id !== 'welcome')
         .slice(-10)
-        .map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        }));
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      try {
+      if (!conversationId) {
+        const now = new Date().toISOString();
+        const conversation: HunterChatConversation = {
+          id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          title: 'New chat', createdAt: now, updatedAt: now, messages: [],
+        };
+        await saveChatConversation(conversation);
+        conversationId = conversation.id;
+        setActiveConversationIdState(conversationId);
+        await setActiveChatId(conversationId);
+        setConversations((previous) => [conversation, ...previous]);
+      }
 
       const userMsg: Message = {
         id: `user_${Date.now()}`,
         role: 'user',
         content: trimmed,
+        createdAt: new Date().toISOString(),
       };
+
+      await appendChatMessage(conversationId, userMsg as HunterChatMessage);
+      setConversations(await getChatConversations());
 
       setMessages((prev) => [...prev, userMsg]);
       setChatDraft(text);
       setInput('');
-      sendingRef.current = true;
-      setSending(true);
       scrollToBottom();
+      } catch {
+        sendingRef.current = false;
+        setSending(false);
+        setInput(text);
+        return;
+      }
 
       try {
         const payload: ChatInput = {
@@ -176,35 +287,50 @@ export default function ChatScreen() {
           const errMsg: Message = {
             id: `err_${Date.now()}`,
             role: 'error',
-            content: res.error ?? 'The AI did not return a valid response. Please try again.',
+            content: 'Hunter AI could not complete that response. Please retry.',
+            createdAt: new Date().toISOString(),
           };
+          await appendChatMessage(conversationId, errMsg as HunterChatMessage);
+          setConversations(await getChatConversations());
           setMessages((prev) => [...prev, errMsg]);
           scrollToBottom();
           return;
         }
 
         // Backend sends reply at top level; wrapper also supports data.reply
-        const replyText =
-          res.reply ?? res.data?.reply ?? 'No response received.';
         const isFallback = res.fallback === true || res.data?.fallback === true;
+        const rawReply = res.reply ?? res.data?.reply;
+        const replyText = isFallback ? null : normalizeChatReply(rawReply);
+        if (!replyText) {
+          throw new Error(isFallback
+            ? 'A fallback response was not shown as live Hunter AI. Please retry when Ollama is available.'
+            : 'Hunter AI returned an invalid response. Please retry.');
+        }
         clearChatDraftIfMatches(text);
 
         const aiMsg: Message = {
           id: `ai_${Date.now()}`,
           role: 'assistant',
           content: replyText,
-          isFallback,
+          isFallback: false,
+          createdAt: new Date().toISOString(),
         };
+        await appendChatMessage(conversationId, { ...aiMsg, role: 'assistant', fallback: false } as HunterChatMessage);
+        setConversations(await getChatConversations());
         setMessages((prev) => [...prev, aiMsg]);
         scrollToBottom();
       } catch (err: any) {
         setInput(text);
         setChatDraft(text);
+        const currentStatus = await refresh();
         const errMsg: Message = {
           id: `err_${Date.now()}`,
           role: 'error',
-          content: err.message || 'Connection error — could not reach the AI. Please retry.',
+          content: safeChatErrorText(onlineRequestErrorMessage(err, currentStatus)),
+          createdAt: new Date().toISOString(),
         };
+        await appendChatMessage(conversationId, errMsg as HunterChatMessage);
+        setConversations(await getChatConversations());
         setMessages((prev) => [...prev, errMsg]);
         scrollToBottom();
       } finally {
@@ -212,7 +338,7 @@ export default function ChatScreen() {
         setSending(false);
       }
     },
-    [messages, sending, scrollToBottom]
+    [messages, sending, scrollToBottom, refresh, activeConversationId, chatReady]
   );
 
   const handleSend = () => sendMessage(input);
@@ -252,15 +378,46 @@ export default function ChatScreen() {
         >
           {/* ── Header ── */}
           <View style={themedStyles.header}>
+            <Pressable style={themedStyles.menuBtn} onPress={() => setSidebarOpen((open) => !open)} accessibilityLabel="Toggle chat history" disabled={!chatReady}>
+              <Text style={themedStyles.menuBtnText}>{sidebarOpen ? '×' : '☰'}</Text>
+            </Pressable>
             <Pressable style={themedStyles.backBtn} onPress={() => router.back()}>
               <Text style={themedStyles.backBtnText}>← BACK</Text>
             </Pressable>
             <View style={themedStyles.headerCenter}>
-              <Text style={themedStyles.systemTag}>SYSTEM // HUNTER INTELLIGENCE</Text>
+              <Text style={themedStyles.systemTag}>Hunter AI</Text>
               <Text style={themedStyles.headerTitle}>HUNTER AI</Text>
             </View>
+
             <View style={[themedStyles.statusDot, sending && themedStyles.statusDotActive]} />
           </View>
+
+          {sidebarOpen && (
+            <View style={themedStyles.sidebar}>
+              <View style={themedStyles.sidebarHeader}>
+                <Text style={themedStyles.sidebarTitle}>CHAT HISTORY</Text>
+                <Pressable style={themedStyles.newChatBtn} onPress={newChat} disabled={sending || !chatReady}>
+                  <Text style={themedStyles.newChatBtnText}>＋ NEW CHAT</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={themedStyles.sidebarList}>
+                {conversations.map((conversation) => (
+                  <View key={conversation.id} style={[themedStyles.conversationRow, activeConversationId === conversation.id && themedStyles.conversationRowActive]}>
+                    <Pressable style={themedStyles.conversationSelect} onPress={() => selectConversation(conversation)} disabled={sending}>
+                      <Text style={themedStyles.conversationTitle} numberOfLines={1}>{conversation.title}</Text>
+                      <Text style={themedStyles.conversationDate}>{new Date(conversation.updatedAt).toLocaleString()}</Text>
+                    </Pressable>
+                    <Pressable style={themedStyles.deleteChatBtn} onPress={() => void removeConversation(conversation.id)} accessibilityLabel="Delete conversation" disabled={sending}>
+                      <Text style={themedStyles.deleteChatText}>×</Text>
+                    </Pressable>
+                  </View>
+                ))}
+                {conversations.length === 0 && <Text style={themedStyles.sidebarEmpty}>No saved conversations yet.</Text>}
+              </ScrollView>
+            </View>
+          )}
+
+          <OfflineNotice visible={internetStatus === 'offline'} />
 
           {/* ── Conversation ── */}
           <ScrollView
@@ -294,8 +451,8 @@ export default function ChatScreen() {
               if (msg.role === 'user') {
                 return (
                   <View key={msg.id} style={themedStyles.userBubbleRow}>
-                    <View style={themedStyles.userBubble}>
-                      <Text style={themedStyles.userBubbleText}>{msg.content}</Text>
+                    <View style={[themedStyles.userBubble, { backgroundColor: theme.buttonBackground, borderColor: theme.borderActive }]}>
+                      <Text style={[themedStyles.userBubbleText, { color: theme.buttonText }]}>{msg.content}</Text>
                     </View>
                   </View>
                 );
@@ -316,10 +473,10 @@ export default function ChatScreen() {
                   <View style={themedStyles.aiBubbleAvatar}>
                     <Text style={themedStyles.aiBubbleAvatarText}>AI</Text>
                   </View>
-                  <View style={themedStyles.aiBubble}>
+                  <View style={[themedStyles.aiBubble, { backgroundColor: theme.surface, borderColor: theme.border, overflow: 'hidden' }]}>
                     {msg.isFallback && (
                       <View style={themedStyles.fallbackTag}>
-                        <Text style={themedStyles.fallbackTagText}>OFFLINE FALLBACK</Text>
+                        <Text style={themedStyles.fallbackTagText}>LOCAL FALLBACK · NOT LIVE HUNTER AI</Text>
                       </View>
                     )}
                     <AssistantMessage content={msg.content} />
@@ -334,8 +491,8 @@ export default function ChatScreen() {
                 <View style={themedStyles.aiBubbleAvatar}>
                   <Text style={themedStyles.aiBubbleAvatarText}>AI</Text>
                 </View>
-                <View style={themedStyles.typingBubble}>
-                  <Text style={themedStyles.typingText}>⚡ PROCESSING...</Text>
+                <View style={[themedStyles.typingBubble, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  <Text style={[themedStyles.typingText, { color: theme.accent }]}>⚡ PROCESSING...</Text>
                 </View>
               </View>
             )}
@@ -353,7 +510,7 @@ export default function ChatScreen() {
           {/* ── Retry shortcut (shown when last message is an error) ── */}
           {hasErrorAtEnd && (
             <View style={themedStyles.retryBar}>
-              <Text style={themedStyles.retryBarLabel}>Last message failed.</Text>
+              <Text style={themedStyles.retryBarLabel}>Retry this Hunter AI request.</Text>
               <Pressable style={themedStyles.retryBarBtn} onPress={handleRetry} disabled={sending}>
                 <Text style={themedStyles.retryBarBtnText}>RETRY ⟳</Text>
               </Pressable>
@@ -387,7 +544,7 @@ export default function ChatScreen() {
                   handleSend();
                 }
               }}
-              editable={!sending}
+              editable={!sending && chatReady}
             />
             <Pressable
               style={[
@@ -395,7 +552,7 @@ export default function ChatScreen() {
                 (sending || !input.trim()) && themedStyles.sendBtnDisabled,
               ]}
               onPress={handleSend}
-              disabled={sending || !input.trim()}
+              disabled={sending || !chatReady || !input.trim()}
             >
               <Text style={themedStyles.sendBtnText}>{sending ? '...' : '➔'}</Text>
             </Pressable>
@@ -430,6 +587,22 @@ const styles = StyleSheet.create({
     borderBottomColor: '#102030',
     gap: 10,
   },
+  menuBtn: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0b1e30', borderWidth: 1, borderColor: '#1c3d5e' },
+  menuBtnText: { color: '#00f3ff', fontSize: 17, fontWeight: '900' },
+  sidebar: { position: 'absolute', zIndex: 10, top: 60, bottom: 0, left: 0, width: 300, maxWidth: '85%', padding: 14, backgroundColor: '#071626', borderRightWidth: 1, borderColor: '#1c3d5e' },
+  sidebarHeader: { gap: 10, paddingBottom: 12, borderBottomWidth: 1, borderColor: '#1c3d5e' },
+  sidebarTitle: { color: '#00f3ff', fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
+  newChatBtn: { padding: 10, borderRadius: 7, backgroundColor: '#0b1e30', borderWidth: 1, borderColor: '#00f3ff' },
+  newChatBtnText: { color: '#00f3ff', fontSize: 10, fontWeight: '900', textAlign: 'center' },
+  sidebarList: { flex: 1 },
+  conversationRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 9, paddingHorizontal: 8, borderBottomWidth: 1, borderColor: '#102030' },
+  conversationRowActive: { backgroundColor: '#0b1e30' },
+  conversationSelect: { flex: 1 },
+  conversationTitle: { color: '#e5f5ff', fontSize: 12, fontWeight: '700' },
+  conversationDate: { color: '#7795ad', fontSize: 9, marginTop: 3 },
+  deleteChatBtn: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center' },
+  deleteChatText: { color: '#ff6475', fontSize: 19, fontWeight: '800' },
+  sidebarEmpty: { color: '#9eb5c9', fontSize: 12, paddingVertical: 18 },
   backBtn: {
     paddingVertical: 6,
     paddingHorizontal: 10,
@@ -510,26 +683,33 @@ const styles = StyleSheet.create({
   userBubbleRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    minWidth: 0,
   },
   userBubble: {
     backgroundColor: '#00f3ff',
     borderRadius: 14,
     borderBottomRightRadius: 4,
+    borderWidth: 1,
+    borderColor: '#00f3ff',
     paddingVertical: 10,
     paddingHorizontal: 14,
     maxWidth: '80%',
+    minWidth: 0,
+    flexShrink: 1,
   },
   userBubbleText: {
     color: '#02111d',
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '600',
+    flexShrink: 1,
   },
   // AI bubble
   aiBubbleRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
+    minWidth: 0,
   },
   aiBubbleAvatar: {
     width: 28,
@@ -558,6 +738,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     maxWidth: '80%',
+    minWidth: 0,
+    flexShrink: 1,
     gap: 6,
   },
   fallbackTag: {
@@ -579,13 +761,14 @@ const styles = StyleSheet.create({
     color: '#c8dff0',
     fontSize: 13,
     lineHeight: 20,
+    flexShrink: 1,
   },
   markdownMessage: {
     gap: 4,
+    minWidth: 0,
   },
   markdownBold: {
     fontWeight: '800',
-    color: '#e6f6ff',
   },
   markdownHeading: {
     color: '#00f3ff',
@@ -600,9 +783,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 7,
+    minWidth: 0,
   },
   markdownListText: {
     flex: 1,
+    minWidth: 0,
   },
   markdownSpacer: {
     height: 5,

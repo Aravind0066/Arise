@@ -12,12 +12,10 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "ajv": "^8.20.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "mongoose": "^9.7.2"
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

@@ -69,6 +69,24 @@ test('rejects unsupported movements and invalid prescription ranges', () => {
   assert.equal(normalizeGeneratedWorkout(invalidReps, baseRoutine, '2026-10-27'), null);
 });
 
+test('normalizes clear workout field variations while retaining all required exercise data', () => {
+  const varied = {
+    name: 'Daily Foundation',
+    objective: 'Build full-body strength',
+    duration: '20',
+    movements: [
+      { exercise: 'Push-ups', type: 'repetitions', reps: '8', restPeriodSeconds: '30', muscleGroups: 'Chest, Arms', formTips: 'Keep alignment.' },
+      { exercise: 'Squats', reps: 10, restSeconds: 30, muscles: ['Legs'], tips: 'Move with control.' },
+      { exercise: 'Plank', type: 'hold', seconds: '25', restSeconds: 30, muscles: ['Core'], instructions: 'Breathe steadily.' },
+    ],
+  };
+  const routine = normalizeGeneratedWorkout(varied, baseRoutine, '2026-10-27');
+  assert.ok(routine);
+  assert.equal(routine.durationMinutes, 20);
+  assert.equal(routine.exercises[0].targetReps, 8);
+  assert.equal(routine.exercises[2].durationSeconds, 25);
+});
+
 test('workout prompt does not invent missing profile details or equipment', () => {
   const prompt = buildWorkoutPrompt(null, { strength: 35, health: 45, discipline: 30, knowledge: 40, mindfulness: 35 });
   assert.match(prompt, /No saved onboarding details are available/);

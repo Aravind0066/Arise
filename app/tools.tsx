@@ -18,8 +18,6 @@ import { BottomNavigation } from '../components/BottomNavigation';
 import WorkoutScreen from '../components/WorkoutScreen';
 import NutritionContent from '../components/NutritionContent';
 import {
-  getHunterProfile,
-  getHunterStats,
   getJournalEntries,
   getScreenTime,
   getWorkoutLogs,
@@ -29,43 +27,49 @@ import {
   saveWorkoutLog,
 } from '../lib/hunterStorage';
 import {
-  HunterProfile,
-  HunterStats,
   JournalEntry,
   ScreenTimeRecord,
   WorkoutLog,
 } from '../lib/hunterTypes';
 import { setChatDraft, useChatDraft } from '../lib/chatDraftStore';
+import { canAccreditPomodoro } from '../lib/pomodoroRules';
+import { buildCustomWorkoutLog } from '../lib/workoutLogUtils';
 
 export default function ToolsScreen() {
   const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
   const router = useRouter();
-  const params = useLocalSearchParams<{ tab?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; section?: string }>();
   const { width: windowWidth } = useWindowDimensions();
   const [activeTool, setActiveTool] = useState<'workout' | 'nutrition' | 'home' | 'pomo' | 'ascend'>('home');
-  const [profile, setProfile] = useState<HunterProfile | null>(null);
-  const [stats, setStats] = useState<HunterStats | null>(null);
+  const [ascendSection, setAscendSection] = useState<'journal' | 'discipline'>('journal');
   const [notice, setNotice] = useState('');
   const chatSearchDraft = useChatDraft();
   const chatOpenedRef = useRef(false);
-  const homeColumns = windowWidth >= 960 ? 4 : windowWidth >= 760 ? 3 : windowWidth < 360 ? 1 : 2;
-  const homeGridMaxWidth = homeColumns === 4 ? 1060 : homeColumns === 3 ? 800 : homeColumns === 2 ? 540 : 280;
+  const homeColumns = windowWidth >= 1474 ? 4 : windowWidth >= 1100 ? 3 : windowWidth < 360 ? 1 : 2;
+  const homeGridMaxWidth = homeColumns === 4 ? 1460 : homeColumns === 3 ? 1080 : homeColumns === 2 ? 714 : 350;
   const homeGridWidth = Math.min(Math.max(0, windowWidth - 32), homeGridMaxWidth);
-  const homeCardWidth = Math.min(250, (homeGridWidth - 14 * (homeColumns - 1)) / homeColumns);
+  const homeCardWidth = Math.min(350, (homeGridWidth - 14 * (homeColumns - 1)) / homeColumns);
 
   useEffect(() => {
+    if (params.tab === 'discipline') {
+      setActiveTool('ascend');
+      setAscendSection('discipline');
+      return;
+    }
     if (params.tab === 'workout' || params.tab === 'nutrition' || params.tab === 'home' || params.tab === 'pomo' || params.tab === 'ascend') {
       setActiveTool(params.tab);
+      if (params.tab === 'ascend' && params.section === 'discipline') setAscendSection('discipline');
+      if (params.tab === 'ascend' && params.section === 'journal') setAscendSection('journal');
     }
-  }, [params.tab]);
+  }, [params.tab, params.section]);
 
   // 1. WORKOUT STATE
   const [customExercise, setCustomExercise] = useState('Dumbbell Bench Press');
   const [sets, setSets] = useState('4');
   const [reps, setReps] = useState('10');
   const [weight, setWeight] = useState('24');
-  const [difficulty, setDifficulty] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
+  const difficulty = 'Intermediate' as const;
   const [workoutLogs, setWorkoutLogs] = useState<WorkoutLog[]>([]);
 
   // 2. POMODORO / STUDY STATE
@@ -74,6 +78,10 @@ export default function ToolsScreen() {
   const [timerRunning, setTimerRunning] = useState(false);
   const [studyTopic, setStudyTopic] = useState('Graph Theory & Shortest Path');
   const [showStudySummaryModal, setShowStudySummaryModal] = useState(false);
+  const [studySessionId, setStudySessionId] = useState(() => `pomo-${Date.now()}`);
+  const [studySessionComplete, setStudySessionComplete] = useState(false);
+  const [studySessionRewarded, setStudySessionRewarded] = useState(false);
+  const pomodoroAccreditingRef = useRef(false);
 
   // 3. JOURNAL STATE
   const [wentWell, setWentWell] = useState('');
@@ -92,13 +100,9 @@ export default function ToolsScreen() {
   });
 
   const loadData = useCallback(async () => {
-    const p = await getHunterProfile();
-    const s = await getHunterStats();
     const w = await getWorkoutLogs();
     const j = await getJournalEntries();
     const sc = await getScreenTime();
-    setProfile(p);
-    setStats(s);
     setWorkoutLogs(w.slice(0, 5));
     setJournalLogs(j.slice(0, 3));
     setScreenData(sc);
@@ -130,6 +134,7 @@ export default function ToolsScreen() {
           if (prev <= 1) {
             if (interval) clearInterval(interval);
             setTimerRunning(false);
+            setStudySessionComplete(true);
             setShowStudySummaryModal(true);
             return 0;
           }
@@ -146,15 +151,24 @@ export default function ToolsScreen() {
     setStudyMode(min);
     setSecondsRemaining(min * 60);
     setTimerRunning(false);
+    setStudySessionId(`pomo-${Date.now()}`);
+    setStudySessionComplete(false);
+    setStudySessionRewarded(false);
+    setShowStudySummaryModal(false);
   };
 
   const toggleTimer = () => {
+    if (studySessionComplete || studySessionRewarded) return;
     setTimerRunning((prev) => !prev);
   };
 
   const resetTimer = () => {
     setTimerRunning(false);
     setSecondsRemaining(studyMode * 60);
+    setStudySessionId(`pomo-${Date.now()}`);
+    setStudySessionComplete(false);
+    setStudySessionRewarded(false);
+    setShowStudySummaryModal(false);
   };
 
   const formatTimer = (totalSeconds: number) => {
@@ -165,19 +179,23 @@ export default function ToolsScreen() {
 
   // FINISH POMODORO & REWARD KNOWLEDGE
   const handleCompletePomodoro = async () => {
+    if (!canAccreditPomodoro(studySessionComplete, studySessionRewarded) || pomodoroAccreditingRef.current) return;
+    pomodoroAccreditingRef.current = true;
     setShowStudySummaryModal(false);
     try {
       const res = await recordStudyCompletion({
         topic: studyTopic.trim() || 'Deep Work Study Session',
         durationMinutes: studyMode,
+        completionId: studySessionId,
       });
-      setProfile(res.profile);
-      setStats(res.stats);
+      setStudySessionRewarded(true);
       setNotice(`+${studyMode >= 50 ? 80 : 50} XP AWARDED // KNOWLEDGE INCREASED TO ${res.stats.knowledge}`);
       resetTimer();
       setTimeout(() => setNotice(''), 4500);
     } catch (err: any) {
       Alert.alert('Study Error', err.message || 'Failed to complete session');
+    } finally {
+      pomodoroAccreditingRef.current = false;
     }
   };
 
@@ -186,15 +204,10 @@ export default function ToolsScreen() {
     if (!customExercise.trim()) return;
     try {
       const res = await saveWorkoutLog({
-        workoutName: customExercise.trim(),
-        exercisesCompleted: Number(sets) || 4,
-        totalExercises: Number(sets) || 4,
-        durationSeconds: 20 * 60,
-        difficulty,
+        ...buildCustomWorkoutLog({ workoutName: customExercise, sets, reps, weightKg: weight, difficulty }),
+        routineId: `custom-${Date.now()}`,
       });
       setWorkoutLogs((prev) => [res.workout, ...prev.slice(0, 4)]);
-      setProfile(res.profile);
-      setStats(res.stats);
       setNotice(`+50 XP AWARDED // STRENGTH STAT INCREASED TO ${res.stats.strength}`);
       setTimeout(() => setNotice(''), 4500);
     } catch (err: any) {
@@ -220,8 +233,6 @@ export default function ToolsScreen() {
         energyRating: energy,
       });
       setJournalLogs((prev) => [res.journal, ...prev.slice(0, 2)]);
-      setProfile(res.profile);
-      setStats(res.stats);
       setWentWell('');
       setHeldBack('');
       setImproveTomorrow('');
@@ -238,8 +249,6 @@ export default function ToolsScreen() {
     try {
       const res = await saveScreenTimeVictory(screenData);
       setScreenData(res.screenData);
-      setProfile(res.profile);
-      setStats(res.stats);
       setNotice(`+40 XP AWARDED // DISCIPLINE INCREASED TO ${res.stats.discipline}`);
       setTimeout(() => setNotice(''), 4500);
     } catch (err: any) {
@@ -254,8 +263,8 @@ export default function ToolsScreen() {
         <ScrollView contentContainerStyle={themedStyles.content}>
           {/* Header */}
           <View style={themedStyles.header}>
-            <Text style={themedStyles.systemTag}>SYSTEM // UTILITY CORE</Text>
-            <Text style={themedStyles.pageTitle}>HUNTER ACTIVITY MODULES</Text>
+            <Text style={themedStyles.systemTag}>ACTIVITY</Text>
+            <Text style={themedStyles.pageTitle}>HUNTER ACTIVITY</Text>
           </View>
 
           {/* Module Selector Tabs */}
@@ -272,7 +281,18 @@ export default function ToolsScreen() {
                 style={[themedStyles.toolTab, activeTool === tab.id && themedStyles.toolTabActive]}
                 onPress={() => setActiveTool(tab.id as typeof activeTool)}
               >
-                <Text style={themedStyles.toolTabIcon}>{tab.icon}</Text>
+                <Text
+                  style={[
+                    themedStyles.toolTabIcon,
+                    tab.id === 'home' && {
+                      color: activeTool === tab.id ? theme.accent : theme.textSecondary,
+                      textShadowColor: activeTool === tab.id ? theme.accent : 'transparent',
+                      textShadowRadius: activeTool === tab.id ? 8 : 0,
+                    },
+                  ]}
+                >
+                  {tab.icon}
+                </Text>
                 <Text style={[themedStyles.toolTabLabel, activeTool === tab.id && themedStyles.toolTabLabelActive]}>
                   {tab.label}
                 </Text>
@@ -293,8 +313,8 @@ export default function ToolsScreen() {
                   <ImageBackground source={require('../assets/images/tools/workout.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
-                      <Text style={themedStyles.homeCardEyebrow}>STRENGTH // RAID</Text>
-                      <Text style={themedStyles.homeCardTitle}>Workout</Text>
+                      <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>STRENGTH // RAID</Text>
+                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Workout</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -302,8 +322,8 @@ export default function ToolsScreen() {
                   <ImageBackground source={require('../assets/images/tools/pomodoro.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
-                      <Text style={themedStyles.homeCardEyebrow}>FOCUS // PROTOCOL</Text>
-                      <Text style={themedStyles.homeCardTitle}>Pomodoro</Text>
+                      <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>FOCUS // PROTOCOL</Text>
+                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Pomodoro</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -311,8 +331,8 @@ export default function ToolsScreen() {
                   <ImageBackground source={require('../assets/images/tools/nutrition.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
-                      <Text style={themedStyles.homeCardEyebrow}>RECOVERY // FUEL</Text>
-                      <Text style={themedStyles.homeCardTitle}>Nutrition</Text>
+                      <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>RECOVERY // FUEL</Text>
+                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Nutrition</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -320,8 +340,8 @@ export default function ToolsScreen() {
                   <ImageBackground source={require('../assets/images/tools/ascend.png')} style={themedStyles.homeCardImage} imageStyle={themedStyles.homeCardImageStyle}>
                     <View style={themedStyles.homeCardShade} />
                     <View style={themedStyles.homeCardCopy}>
-                      <Text style={themedStyles.homeCardEyebrow}>JOURNAL // DISCIPLINE</Text>
-                      <Text style={themedStyles.homeCardTitle}>Ascend</Text>
+                      <Text style={[themedStyles.homeCardEyebrow, { color: '#7edce4' }]}>JOURNAL // DISCIPLINE</Text>
+                      <Text style={[themedStyles.homeCardTitle, { color: '#ffffff' }]}>Ascend</Text>
                     </View>
                   </ImageBackground>
                 </Pressable>
@@ -362,7 +382,30 @@ export default function ToolsScreen() {
           {/* ========================================================= */}
           {activeTool === 'workout' && (
             <View style={themedStyles.moduleSection}>
-              <WorkoutScreen embedded />
+              <WorkoutScreen embedded onWorkoutCompleted={() => { void getWorkoutLogs().then((logs) => setWorkoutLogs(logs.slice(0, 5))); }} />
+
+              {/* Recent Workout Logs */}
+              {workoutLogs.length > 0 && (
+                <View style={themedStyles.card}>
+                  <Text style={themedStyles.cardTitle}>RECENT WORKOUT RECORDS</Text>
+                  <View style={themedStyles.recentLogsList}>
+                    {workoutLogs.map((log) => (
+                      <View key={log._id} style={themedStyles.recentLogItem}>
+                        <View>
+                          <Text style={themedStyles.recentLogTitle}>{log.workoutName}</Text>
+                          <Text style={themedStyles.recentLogSub}>
+                            {log.exercisesCompleted} Movements · {Math.round(log.durationSeconds / 60)} min
+                            {log.sets != null && log.reps != null && log.weightKg != null
+                              ? ` · ${log.sets}×${log.reps} @ ${log.weightKg} kg`
+                              : ''}
+                          </Text>
+                        </View>
+                        <Text style={themedStyles.recentLogXp}>{log.xpEarned == null ? 'XP unknown' : `+${log.xpEarned} XP`}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
 
               {/* Custom Lifting Log Card */}
               <View style={themedStyles.card}>
@@ -415,25 +458,6 @@ export default function ToolsScreen() {
                 </Pressable>
               </View>
 
-              {/* Recent Workout Logs */}
-              {workoutLogs.length > 0 && (
-                <View style={themedStyles.card}>
-                  <Text style={themedStyles.cardTitle}>RECENT WORKOUT RECORDS</Text>
-                  <View style={themedStyles.recentLogsList}>
-                    {workoutLogs.map((log) => (
-                      <View key={log._id} style={themedStyles.recentLogItem}>
-                        <View>
-                          <Text style={themedStyles.recentLogTitle}>{log.workoutName}</Text>
-                          <Text style={themedStyles.recentLogSub}>
-                            {log.exercisesCompleted} Movements · {Math.round(log.durationSeconds / 60)} min
-                          </Text>
-                        </View>
-                        <Text style={themedStyles.recentLogXp}>+50 XP</Text>
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
             </View>
           )}
 
@@ -445,7 +469,7 @@ export default function ToolsScreen() {
           {activeTool === 'pomo' && (
             <View style={themedStyles.moduleSection}>
               <View style={themedStyles.card}>
-                <Text style={themedStyles.cardTitle}>SYSTEM // DEEP WORK POMODORO</Text>
+                <Text style={themedStyles.cardTitle}>POMO</Text>
                 <Text style={themedStyles.cardSub}>
                   Lock in with zero distraction. The system awards Knowledge & Discipline XP upon completion.
                 </Text>
@@ -499,10 +523,11 @@ export default function ToolsScreen() {
                 </View>
 
                 <Pressable
-                  style={themedStyles.finishEarlyBtn}
+                  style={[themedStyles.finishEarlyBtn, !studySessionComplete && { opacity: 0.45 }]}
+                  disabled={!studySessionComplete || studySessionRewarded}
                   onPress={() => setShowStudySummaryModal(true)}
                 >
-                  <Text style={themedStyles.finishEarlyBtnText}>VERIFY & FINISH BLOCK ➔</Text>
+                  <Text style={themedStyles.finishEarlyBtnText}>{studySessionRewarded ? 'SESSION REWARDED' : studySessionComplete ? 'VERIFY & FINISH BLOCK ➔' : 'FINISH BLOCK WHEN TIMER ENDS'}</Text>
                 </Pressable>
               </View>
             </View>
@@ -512,9 +537,38 @@ export default function ToolsScreen() {
           {/* 3. JOURNAL MODULE */}
           {/* ========================================================= */}
           {activeTool === 'ascend' && (
+            <View style={themedStyles.ascendSectionTabs} accessibilityRole="tablist">
+              {([
+                { id: 'journal', label: 'Journal' },
+                { id: 'discipline', label: 'Discipline' },
+              ] as const).map((section) => {
+                const selected = ascendSection === section.id;
+                return (
+                  <Pressable
+                    key={section.id}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected }}
+                    style={[
+                      themedStyles.ascendSectionTab,
+                      {
+                        backgroundColor: selected ? theme.accentDim : theme.surface,
+                        borderColor: selected ? theme.accent : theme.border,
+                      },
+                    ]}
+                    onPress={() => setAscendSection(section.id)}
+                  >
+                    <Text style={{ color: selected ? theme.accent : theme.textSecondary, fontSize: 11, fontWeight: '900' }}>
+                      {section.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+          {activeTool === 'ascend' && ascendSection === 'journal' && (
             <View style={themedStyles.moduleSection}>
               <View style={themedStyles.card}>
-                <Text style={themedStyles.cardTitle}>MIND MATRIX // 3-PROMPT JOURNAL</Text>
+                <Text style={themedStyles.cardTitle}>3-Prompt Journal</Text>
                 <Text style={themedStyles.cardSub}>
                   Confront the shadow self. Daily reflection recalibrates neural focus and grants Mindfulness XP.
                 </Text>
@@ -539,7 +593,7 @@ export default function ToolsScreen() {
                   style={themedStyles.textAreaField}
                 />
 
-                <Text style={themedStyles.inputLabel}>3. TOMORROW'S PRIME DIRECTIVE</Text>
+                <Text style={themedStyles.inputLabel}>3. TOMORROW&apos;S PRIME DIRECTIVE</Text>
                 <TextInput
                   value={improveTomorrow}
                   onChangeText={setImproveTomorrow}
@@ -608,7 +662,7 @@ export default function ToolsScreen() {
           {/* ========================================================= */}
           {/* 4. DISCIPLINE / SCREEN TIME MODULE */}
           {/* ========================================================= */}
-          {activeTool === 'ascend' && (
+          {activeTool === 'ascend' && ascendSection === 'discipline' && (
             <View style={themedStyles.moduleSection}>
               <View style={themedStyles.card}>
                 <Text style={themedStyles.cardTitle}>DISCIPLINE DEFENSE // SCREEN TIME MATRIX</Text>
@@ -679,7 +733,7 @@ export default function ToolsScreen() {
         <Modal visible={showStudySummaryModal} transparent animationType="fade">
           <View style={themedStyles.modalOverlay}>
             <View style={themedStyles.summaryModalCard}>
-              <Text style={themedStyles.summaryModalTag}>SYSTEM // POMODORO COMPLETE</Text>
+              <Text style={themedStyles.summaryModalTag}>POMO COMPLETE</Text>
               <Text style={themedStyles.summaryModalTitle}>DEEP FOCUS REWARD</Text>
               <Text style={themedStyles.summaryModalDesc}>
                 Session successfully logged for “{studyTopic}”. Ready to accredit Knowledge XP to your hunter dossier.
@@ -701,6 +755,7 @@ export default function ToolsScreen() {
                 <Pressable
                   style={themedStyles.confirmBtn}
                   onPress={handleCompletePomodoro}
+                  disabled={!studySessionComplete || studySessionRewarded}
                 >
                   <Text style={themedStyles.confirmBtnText}>ACCREDIT XP ➔</Text>
                 </Pressable>
@@ -821,7 +876,7 @@ const styles = StyleSheet.create({
   },
   homeCard: {
     width: 250,
-    aspectRatio: 1,
+    aspectRatio: 0.75,
     borderRadius: 14,
     overflow: 'hidden',
     backgroundColor: '#071626',
@@ -835,9 +890,14 @@ const styles = StyleSheet.create({
   },
   homeCardImage: {
     flex: 1,
+    width: '100%',
+    height: '100%',
     justifyContent: 'flex-end',
+    overflow: 'hidden',
   },
   homeCardImageStyle: {
+    width: '100%',
+    height: '100%',
     borderRadius: 13,
     resizeMode: 'cover',
   },
@@ -902,6 +962,19 @@ const styles = StyleSheet.create({
   },
   toolTabLabelActive: {
     color: '#00f3ff',
+  },
+  ascendSectionTabs: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  ascendSectionTab: {
+    flex: 1,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
   },
   noticeBox: {
     backgroundColor: '#0b233a',

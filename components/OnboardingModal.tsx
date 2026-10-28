@@ -152,7 +152,7 @@ export function OnboardingModal({ visible, onComplete }: OnboardingModalProps) {
         <ScrollView contentContainerStyle={themedStyles.container}>
           {/* Header */}
           <View style={themedStyles.header}>
-            <Text style={themedStyles.systemTag}>SYSTEM // BASELINE ASSESSMENT</Text>
+            <Text style={themedStyles.systemTag}>Baseline Assessment</Text>
             <Text style={themedStyles.stepIndicator}>
               PHASE {Math.max(1, ['welcome', 'baseline', 'goals', 'analysis', 'identity'].indexOf(step) + 1)} OF 5
             </Text>

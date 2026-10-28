@@ -1,11 +1,12 @@
 // Nutrition recommendation controller
 // Exposes POST /api/nutrition
-// Uses Gemini service for AI generation with deterministic fallback.
+// Uses the configured provider and returns errors for unavailable or invalid generations.
 
-const geminiService = require('../services/geminiService');
+const aiProvider = require('../services/aiProvider');
+const { nutritionSchema } = require('../utils/outputSchemas');
 
 /**
- * Expected body (all fields optional, but at least one must be present):
+ * Expected body (all fields are optional; an empty body requests a general plan):
  * {
  *   fitnessGoal?: string,
  *   dietaryPreferences?: string[],
@@ -14,6 +15,8 @@ const geminiService = require('../services/geminiService');
  *   budget?: number, // approximate per‑meal budget in local currency
  *   availableIngredients?: string[],
  *   mealType?: string, // e.g., breakfast, lunch, dinner, snack
+ *   mealsToPlan?: 'one' | 'full-day',
+ *   context?: object, // previously saved nutrition plans and known-data availability
  *   prepTimeMinutes?: number
  * }
  */
@@ -26,30 +29,15 @@ async function generateNutritionRecommendations(req, res) {
     budget,
     availableIngredients,
     mealType,
+    mealsToPlan,
+    context,
     prepTimeMinutes,
     preparationTime,
   } = req.body || {};
 
   const effectivePrepMinutes = prepTimeMinutes !== undefined ? prepTimeMinutes : preparationTime;
 
-  // At least one of the optional fields must be supplied
-  if (
-    (fitnessGoal === undefined || fitnessGoal === null || String(fitnessGoal).trim().length === 0) &&
-    (!dietaryPreferences || dietaryPreferences.length === 0) &&
-    (!allergies || allergies.length === 0) &&
-    (!restrictions || restrictions.length === 0) &&
-    budget === undefined &&
-    (!availableIngredients || availableIngredients.length === 0) &&
-    mealType === undefined &&
-    effectivePrepMinutes === undefined
-  ) {
-    return res.status(400).json({
-      success: false,
-      error: 'At least one nutrition input field must be provided.',
-    });
-  }
-
-  // Build prompt for Gemini
+// Build prompt for the configured AI provider
   const promptLines = [];
   promptLines.push('You are the HunterOS nutrition recommendation AI. Provide practical meal suggestions respecting the constraints supplied.');
   if (fitnessGoal) promptLines.push(`Fitness goal: ${fitnessGoal}`);
@@ -60,21 +48,30 @@ async function generateNutritionRecommendations(req, res) {
   if (availableIngredients && availableIngredients.length) promptLines.push(`Available ingredients: ${availableIngredients.join(', ')}`);
   if (mealType) promptLines.push(`Meal type: ${mealType}`);
   if (effectivePrepMinutes !== undefined) promptLines.push(`Maximum preparation time (minutes): ${effectivePrepMinutes}`);
-  promptLines.push('Return a JSON array. Each item must contain:');
+  if (mealsToPlan === 'full-day') promptLines.push('Create a full day plan with distinct practical meals; if supplied, ingredients and time limits apply to each meal.');
+  else if (mealsToPlan === 'one') promptLines.push('Create one meal.');
+  else promptLines.push('No meal scope was selected; use a practical single-meal suggestion as the general default.');
+  if (availableIngredients?.length) promptLines.push('Use the supplied ingredients as the available pantry. Do not claim other ingredients are available; clearly label any optional substitutions.');
+  else promptLines.push('No ingredients were supplied. You may propose ingredients for a recipe, but do not imply they are currently available to the user.');
+  promptLines.push('Treat omitted fields as unknown and unconstrained. Use general balanced meal-planning defaults when no goal or preferences are available. Do not infer food intake, nutrition targets, allergies, or equipment. Use appropriate uncertainty for estimated nutrition; never imply laboratory precision.');
+  if (context && typeof context === 'object') promptLines.push(`Saved context (JSON; use only recorded fields): ${JSON.stringify(context).slice(0, 8000)}`);
+  promptLines.push('Return only a JSON array matching the supplied structured-output schema. Do not wrap it in markdown or add commentary.');
+  promptLines.push('Each meal must contain these required fields:');
   promptLines.push('- name (string)');
-  promptLines.push('- ingredients (array of strings)');
+  promptLines.push('- ingredients (array of strings with approximate quantities)');
   promptLines.push('- portions (string, approximate)');
   promptLines.push('- steps (array of strings)');
-  promptLines.push('- nutrition (object with optional approximate calorie and protein ranges)');
-  promptLines.push('- note (string, optional) – if this suggestion is a fallback, include a clear label.');
+  promptLines.push('- preparationTimeMinutes (number, estimated)');
+  promptLines.push('- nutrition (optional object with approximate calories, protein, carbohydrates, fat, and an uncertainty note when estimates are available; never invent unsupported values)');
+  promptLines.push('- preparationTimeMinutes (estimated integer, optional), substitutions (optional array) and goalAlignment (short explanation, optional)');
+  promptLines.push('- note (string, optional)');
 
   const prompt = promptLines.join('\n');
 
   let recommendations = null;
-  let usedFallback = false;
-
-  if (process.env.GEMINI_API_KEY) {
-    const result = await geminiService.generateResponse(prompt);
+  let result;
+  try { result = await aiProvider.generateResponse(prompt, { responseMode: 'json', format: nutritionSchema, feature: 'nutrition' }); }
+  catch { return res.status(502).json({ success: false, error: 'Ollama inference failed unexpectedly.', errorType: 'OLLAMA_PROVIDER_ERROR' }); }
     if (result.success) {
       const raw = result.data;
       if (Array.isArray(raw)) {
@@ -85,45 +82,64 @@ async function generateNutritionRecommendations(req, res) {
           : (Array.isArray(raw.meals) ? raw.meals : (Array.isArray(raw.data) ? raw.data : null));
       }
     } else {
-      console.warn('Gemini nutrition error:', result.error);
+      const errorType = result.errorType || 'OLLAMA_PROVIDER_ERROR';
+      return res.status(aiProvider.responseStatusFor(errorType)).json({ success: false, error: result.error || 'Nutrition AI is unavailable.', errorType });
     }
-  }
 
   // Normalizer / validation helper for a single recommendation
   const normalizeRec = (rec) => {
     if (!rec || typeof rec !== 'object') return null;
-    const name = typeof rec.name === 'string' && rec.name.trim().length > 0 ? rec.name.trim() : null;
-    const ingredients = Array.isArray(rec.ingredients) && rec.ingredients.length > 0
-      ? rec.ingredients.map(i => String(i).trim()).filter(Boolean)
+    const nameValue = rec.name ?? rec.mealName ?? rec.meal_name ?? rec.title;
+    const name = typeof nameValue === 'string' && nameValue.trim().length > 0 && nameValue.trim().length <= 120 ? nameValue.trim() : null;
+    const rawIngredients = rec.ingredients ?? rec.items;
+    const mappedIngredients = Array.isArray(rawIngredients) && rawIngredients.length > 0 && rawIngredients.length <= 40
+      ? rawIngredients.map((ingredient) => {
+        if (typeof ingredient === 'string') return ingredient.trim();
+        if (!ingredient || typeof ingredient !== 'object') return '';
+        const itemName = ingredient.name ?? ingredient.ingredient;
+        if (typeof itemName !== 'string' || !itemName.trim()) return '';
+        const amount = ingredient.quantity ?? ingredient.amount;
+        return amount === undefined || amount === null || String(amount).trim() === ''
+          ? itemName.trim()
+          : `${String(amount).trim()} ${itemName.trim()}`;
+      })
       : null;
-    const portions = typeof rec.portions === 'string' && rec.portions.trim().length > 0
-      ? rec.portions.trim()
-      : '1 serving';
-    const steps = Array.isArray(rec.steps) && rec.steps.length > 0
-      ? rec.steps.map(s => String(s).trim()).filter(Boolean)
+    const ingredients = mappedIngredients && mappedIngredients.every((i) => i.length > 0 && i.length <= 180) ? mappedIngredients : null;
+    const rawPortions = rec.portions ?? rec.servings ?? rec.servingSize ?? rec.serving_size;
+    const portions = (typeof rawPortions === 'string' || typeof rawPortions === 'number') && String(rawPortions).trim().length > 0 && String(rawPortions).trim().length <= 100 ? String(rawPortions).trim() : null;
+    const rawSteps = rec.steps ?? rec.instructions;
+    const steps = Array.isArray(rawSteps) && rawSteps.length > 0 && rawSteps.length <= 30 && rawSteps.every(s => typeof s === 'string' && s.trim().length > 0 && s.trim().length <= 500)
+      ? rawSteps.map(s => s.trim())
       : null;
     if (!name || !ingredients || !steps) return null;
-    const rawNutrition = (typeof rec.nutrition === 'object' && rec.nutrition !== null) ? rec.nutrition : {};
+    if (!portions) return null;
+    const rawNutrition = rec.nutrition ?? rec.nutritionFacts ?? rec.nutrition_facts ?? rec.macros;
+    if (rawNutrition !== undefined && (!rawNutrition || typeof rawNutrition !== 'object' || Array.isArray(rawNutrition))) return null;
     const normalizeNutritionValue = (value) => {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80) return value.trim();
       return undefined;
     };
-    const nutrition = {
-      calories: normalizeNutritionValue(rawNutrition.calories),
-      protein: normalizeNutritionValue(rawNutrition.protein),
+    const nutrition = rawNutrition ? {
+      calories: normalizeNutritionValue(rawNutrition.calories ?? rawNutrition.caloriesKcal ?? rawNutrition.calories_kcal ?? rawNutrition.kcal),
+      protein: normalizeNutritionValue(rawNutrition.protein ?? rawNutrition.proteinGrams ?? rawNutrition.protein_g),
       approximateCalories: normalizeNutritionValue(rawNutrition.approximateCalories),
       approximateProtein: normalizeNutritionValue(rawNutrition.approximateProtein),
-      note: typeof rawNutrition.note === 'string' ? rawNutrition.note.trim().slice(0, 200) : undefined,
-    };
-    Object.keys(nutrition).forEach((key) => nutrition[key] === undefined && delete nutrition[key]);
+      carbohydrates: normalizeNutritionValue(rawNutrition.carbohydrates ?? rawNutrition.carbs ?? rawNutrition.carbohydratesGrams ?? rawNutrition.carbohydrates_g),
+      fat: normalizeNutritionValue(rawNutrition.fat ?? rawNutrition.fatGrams ?? rawNutrition.fat_g),
+      note: typeof (rawNutrition.note ?? rawNutrition.uncertainty) === 'string' ? (rawNutrition.note ?? rawNutrition.uncertainty).trim().slice(0, 200) : undefined,
+    } : undefined;
+    if (nutrition) Object.keys(nutrition).forEach((key) => nutrition[key] === undefined && delete nutrition[key]);
     return {
       name,
       ingredients,
       portions,
       steps,
-      nutrition,
+      ...(nutrition && Object.keys(nutrition).length ? { nutrition } : {}),
       note: typeof rec.note === 'string' ? rec.note : undefined,
+      preparationTimeMinutes: Number.isInteger(rec.preparationTimeMinutes ?? rec.preparation_time_minutes ?? rec.prepTimeMinutes ?? rec.prep_time_minutes) && (rec.preparationTimeMinutes ?? rec.preparation_time_minutes ?? rec.prepTimeMinutes ?? rec.prep_time_minutes) > 0 && (rec.preparationTimeMinutes ?? rec.preparation_time_minutes ?? rec.prepTimeMinutes ?? rec.prep_time_minutes) <= 360 ? (rec.preparationTimeMinutes ?? rec.preparation_time_minutes ?? rec.prepTimeMinutes ?? rec.prep_time_minutes) : undefined,
+      substitutions: Array.isArray(rec.substitutions) ? rec.substitutions.map(s => String(s).trim()).filter(Boolean).slice(0, 12) : undefined,
+      goalAlignment: typeof (rec.goalAlignment ?? rec.goal_alignment) === 'string' ? (rec.goalAlignment ?? rec.goal_alignment).trim().slice(0, 240) : undefined,
     };
   };
 
@@ -137,37 +153,20 @@ async function generateNutritionRecommendations(req, res) {
 
   if (validLiveRecs) {
     recommendations = validLiveRecs;
-    usedFallback = false;
   } else {
-    usedFallback = true;
-    // Simple deterministic fallback: generate up to 2 meals based on available data
-    const base = fitnessGoal ? fitnessGoal.split(' ')[0] : 'Meal';
-    const pref = (dietaryPreferences && dietaryPreferences[0]) || 'General';
-    const time = effectivePrepMinutes || 30;
-    const now = new Date();
-    recommendations = [
-      {
-        name: `${base.toUpperCase()} POWER SALAD`,
-        ingredients: ['mixed greens', 'cherry tomatoes', 'cucumber', 'olive oil', 'lemon juice'],
-        portions: '1 bowl',
-        steps: ['Combine all ingredients in a bowl.', 'Dress with olive oil and lemon juice.', 'Toss and serve.'],
-        nutrition: { approximateCalories: '250-300', approximateProtein: '10-15g' },
-        note: 'Fallback suggestion – adjust ingredients to respect allergies/restrictions.',
-      },
-      {
-        name: `${base.toUpperCase()} QUICK OMELET`,
-        ingredients: ['2 eggs', 'spinach', 'feta cheese', 'pepper'],
-        portions: '1 serving',
-        steps: ['Beat eggs.', 'Cook spinach briefly.', 'Add eggs and cheese, fold when set.', 'Season and serve.'],
-        nutrition: { approximateCalories: '200-250', approximateProtein: '15-20g' },
-        note: 'Fallback suggestion – adjust to avoid allergens.',
-      },
-    ];
+    if (process.env.NODE_ENV !== 'production') {
+      const shape = Array.isArray(recommendations)
+        ? { type: 'array', length: recommendations.length, firstItemKeys: recommendations[0] && typeof recommendations[0] === 'object' ? Object.keys(recommendations[0]).slice(0, 20) : [] }
+        : { type: recommendations === null ? 'null' : typeof recommendations, keys: recommendations && typeof recommendations === 'object' ? Object.keys(recommendations).slice(0, 20) : [] };
+      console.warn(`[HunterOS validation] feature=nutrition result=failed shape=${JSON.stringify(shape)}`);
+    }
+    return res.status(502).json({ success: false, error: 'Nutrition output did not match the meal contract. Required for each meal: name, ingredients, portions or servings, and steps or instructions. Retry generation.', errorType: 'OUTPUT_SCHEMA_VALIDATION_FAILED' });
   }
 
   return res.json({
     success: true,
-    fallback: usedFallback,
+    fallback: false,
+    source: 'ollama-local',
     recommendations,
     data: recommendations,
   });

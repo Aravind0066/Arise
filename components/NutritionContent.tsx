@@ -1,66 +1,40 @@
 import { useAppearance, useThemedStyles } from '../lib/AppearanceContext';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BottomNavigation } from './BottomNavigation';
 import { getNutritionRecommendations } from '../lib/api';
-import { getHunterProfile } from '../lib/hunterStorage';
+import { getHunterProfile, getNutritionHistory, saveNutritionHistoryRecord, getNutritionPreferences, saveNutritionPreferences } from '../lib/hunterStorage';
 import type { HunterProfile, NutritionRecommendation } from '../lib/hunterTypes';
-
-const EMBEDDED_NUTRITION_FALLBACK: NutritionRecommendation[] = [
-  {
-    name: 'POWER CONDENSED PROTEIN BOWL',
-    ingredients: ['grilled chicken breast or tofu', 'brown jasmine rice', 'steamed broccoli', 'avocado slices', 'cold-pressed olive oil'],
-    portions: '1 bowl (~450g)',
-    steps: [
-      'Prepare 150g protein source with sea salt and black pepper.',
-      'Combine over 1 cup warm brown rice and steamed greens.',
-      'Drizzle with olive oil and top with fresh avocado slices.',
-    ],
-    nutrition: {
-      calories: 520,
-      protein: 42,
-      note: 'High-protein recovery matrix for post-training regeneration.',
-    },
-    note: 'Embedded offline meal guidance — verified nutritional baseline.',
-  },
-  {
-    name: 'HUNTER QUICK OAT & AMINO PROTOCOL',
-    ingredients: ['rolled whole oats', 'whey or plant protein powder', 'mixed berries', 'chia seeds', 'almond butter'],
-    portions: '1 serving (~350g)',
-    steps: [
-      'Simmer 80g oats in 250ml water or milk alternative for 5 minutes.',
-      'Stir in 1 scoop protein isolate once removed from heat.',
-      'Garnish with wild berries, chia seeds, and 1 tbsp almond butter.',
-    ],
-    nutrition: {
-      calories: 440,
-      protein: 34,
-      note: 'Rapid sustained glycogen synthesis for endurance.',
-    },
-    note: 'Embedded offline meal guidance — pre-dungeon fuel.',
-  },
-];
+import { buildNutritionGenerationInput, DEFAULT_NUTRITION_PREFERENCES, type NutritionPreferences } from '../lib/nutritionGeneration';
+import { useInternetConnectivity } from '../lib/ConnectivityContext';
+import { classifyOnlineRequestFailure, onlineRequestErrorMessage } from '../lib/connectivityRules';
+import { OfflineNotice } from './OfflineNotice';
 
 export default function NutritionContent({ embedded = false }: { embedded?: boolean }) {
   const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
   const router = useRouter();
+  const { status: internetStatus, refresh } = useInternetConnectivity();
 
   const [profile, setProfile] = useState<HunterProfile | null>(null);
   const [recs, setRecs] = useState<NutritionRecommendation[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorKind, setErrorKind] = useState<'offline' | 'backend' | 'ai' | null>(null);
   const [isFallback, setIsFallback] = useState(false);
-  const [isOffline, setIsOffline] = useState(false);
   const [hasFetched, setHasFetched] = useState(false);
+  const [nutritionPreferences, setNutritionPreferences] = useState<NutritionPreferences>(DEFAULT_NUTRITION_PREFERENCES);
+  const [nutritionPreferencesLoaded, setNutritionPreferencesLoaded] = useState(false);
+  const requestInFlight = useRef(false);
 
   // Load profile on focus for personalisation context
   const loadProfile = useCallback(async () => {
@@ -70,19 +44,31 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
 
   useEffect(() => { void loadProfile(); }, [loadProfile]);
 
+  useEffect(() => { void getNutritionPreferences().then((saved) => { setNutritionPreferences(saved); setNutritionPreferencesLoaded(true); }); }, []);
+  useEffect(() => { if (nutritionPreferencesLoaded) void saveNutritionPreferences(nutritionPreferences); }, [nutritionPreferences, nutritionPreferencesLoaded]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getNutritionHistory().then((history) => {
+      if (cancelled || !history.length) return;
+      const latest = history[0];
+      setRecs(latest.recommendations);
+      setIsFallback(latest.fallback);
+      setHasFetched(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   const fetchRecommendations = async () => {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
     setLoading(true);
     setError('');
+    setErrorKind(null);
     setIsFallback(false);
-    setIsOffline(false);
-
     try {
-      // Build payload with profile goal or fallback, supporting both prep field names
-      const payload: Parameters<typeof getNutritionRecommendations>[0] = {
-        fitnessGoal: profile?.primaryGoal || 'Ascension & Conditioning',
-        prepTimeMinutes: 30,
-        preparationTime: 30,
-      };
+      const [savedHistory] = await Promise.all([getNutritionHistory(), saveNutritionPreferences(nutritionPreferences)]);
+      const payload = buildNutritionGenerationInput(nutritionPreferences, profile?.primaryGoal, savedHistory);
 
       // Call typed API wrapper
       const res = await getNutritionRecommendations(payload);
@@ -94,18 +80,26 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
 
       // The nutrition endpoint returns recommendations at the top level.
       const list = res.recommendations;
+      await saveNutritionHistoryRecord({
+        fitnessGoal: payload.fitnessGoal,
+        dietaryPreferences: payload.dietaryPreferences,
+        preparationTime: payload.prepTimeMinutes,
+        inputs: payload,
+        fallback: res.fallback === true,
+        source: res.source,
+        recommendations: list,
+      });
       setRecs(list);
       setIsFallback(res.fallback === true);
-      setIsOffline(false);
       setHasFetched(true);
     } catch (err: any) {
-      // Keep fallback recommendations available when the backend genuinely cannot be reached
-      setRecs(EMBEDDED_NUTRITION_FALLBACK);
-      setIsFallback(true);
-      setIsOffline(true);
+      const currentStatus = await refresh();
+      const failureKind = classifyOnlineRequestFailure(err, currentStatus);
+      setErrorKind(failureKind);
+      setError(failureKind === 'offline' ? '' : onlineRequestErrorMessage(err, currentStatus));
       setHasFetched(true);
-      setError('');
     } finally {
+      requestInFlight.current = false;
       setLoading(false);
     }
   };
@@ -118,17 +112,31 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
               <Text style={themedStyles.backBtnText}>← BACK</Text>
             </Pressable> : null}
             <View style={themedStyles.headerTextBlock}>
-              <Text style={themedStyles.systemTag}>SYSTEM // HUNTER NUTRITION MODULE</Text>
+              <Text style={themedStyles.systemTag}>Nutrition</Text>
               <Text style={themedStyles.pageTitle}>NUTRITION MATRIX</Text>
             </View>
+            <Pressable style={themedStyles.historyBtn} onPress={() => router.push('/nutrition-history' as any)}>
+              <Text style={themedStyles.historyBtnText}>HISTORY</Text>
+            </Pressable>
             <Pressable
-              style={[themedStyles.refreshBtn, loading && themedStyles.refreshBtnDisabled]}
+              style={[
+                themedStyles.refreshBtn,
+                loading && themedStyles.refreshBtnDisabled,
+                {
+                  backgroundColor: loading ? theme.surfaceAlt : theme.surface,
+                  borderColor: loading ? theme.border : theme.accent,
+                },
+              ]}
               onPress={fetchRecommendations}
               disabled={loading}
             >
-              <Text style={themedStyles.refreshBtnText}>{loading ? '...' : '⟳ SCAN'}</Text>
+              <Text style={[themedStyles.refreshBtnText, { color: loading ? theme.textSecondary : theme.accent }]}>
+                {loading ? '...' : '⟳ SCAN'}
+              </Text>
             </Pressable>
           </View>
+
+          <OfflineNotice visible={internetStatus === 'offline'} />
 
           {/* Overview card */}
           <View style={themedStyles.overviewCard}>
@@ -151,6 +159,18 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
             ) : null}
           </View>
 
+          <View style={themedStyles.overviewCard}>
+            <Text style={themedStyles.overviewTitle}>OPTIONAL MEAL DETAILS</Text>
+            <TextInput value={nutritionPreferences.availableIngredients} onChangeText={(availableIngredients) => setNutritionPreferences((p) => ({ ...p, availableIngredients }))} placeholder="Ingredients (optional, comma separated)" placeholderTextColor={theme.textSecondary} style={themedStyles.input} />
+            <Text style={themedStyles.formLabel}>COOKING TIME · OPTIONAL</Text>
+            <View style={themedStyles.choiceRow}>{[10, 20, 30].map((minutes) => <Pressable key={minutes} onPress={() => setNutritionPreferences((p) => ({ ...p, preparationTime: p.preparationTime === minutes ? null : minutes }))} style={[themedStyles.choice, nutritionPreferences.preparationTime === minutes && themedStyles.choiceActive]}><Text style={themedStyles.choiceText}>{minutes} min</Text></Pressable>)}</View>
+            <TextInput value={nutritionPreferences.dietaryPreferences} onChangeText={(dietaryPreferences) => setNutritionPreferences((p) => ({ ...p, dietaryPreferences }))} placeholder="Dietary preferences or restrictions (optional)" placeholderTextColor={theme.textSecondary} style={themedStyles.input} />
+            <TextInput value={nutritionPreferences.fitnessGoal} onChangeText={(fitnessGoal) => setNutritionPreferences((p) => ({ ...p, fitnessGoal }))} placeholder={`Nutrition goal (optional; profile: ${profile?.primaryGoal || 'not recorded'})`} placeholderTextColor={theme.textSecondary} style={themedStyles.input} />
+            <TextInput value={nutritionPreferences.budget} onChangeText={(budget) => setNutritionPreferences((p) => ({ ...p, budget }))} placeholder="Optional budget per meal" placeholderTextColor={theme.textSecondary} keyboardType="decimal-pad" style={themedStyles.input} />
+            <Text style={themedStyles.formLabel}>PLAN</Text>
+            <View style={themedStyles.choiceRow}>{([{ key: undefined, label: 'No preference' }, { key: 'one', label: 'One meal' }, { key: 'full-day', label: 'Full day' }] as const).map(({ key, label }) => <Pressable key={label} onPress={() => setNutritionPreferences((p) => ({ ...p, mealsToPlan: key }))} style={[themedStyles.choice, nutritionPreferences.mealsToPlan === key && themedStyles.choiceActive]}><Text style={themedStyles.choiceText}>{label}</Text></Pressable>)}</View>
+          </View>
+
           {/* CTA when nothing fetched yet */}
           {!hasFetched && !loading && error === '' && (
             <View style={themedStyles.emptyState}>
@@ -159,8 +179,11 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
               <Text style={themedStyles.emptyBody}>
                 Tap SCAN to generate meal guidance tailored to your hunter profile.
               </Text>
-              <Pressable style={themedStyles.primaryCta} onPress={fetchRecommendations}>
-                <Text style={themedStyles.primaryCtaText}>GENERATE NUTRITION GUIDANCE ➔</Text>
+              <Pressable
+                style={[themedStyles.primaryCta, { backgroundColor: theme.buttonBackground }]}
+                onPress={fetchRecommendations}
+              >
+                <Text style={[themedStyles.primaryCtaText, { color: theme.buttonText }]}>GENERATE NUTRITION GUIDANCE ➔</Text>
               </Pressable>
             </View>
           )}
@@ -177,7 +200,9 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
           {/* Error */}
           {!loading && error !== '' && (
             <View style={themedStyles.errorBox}>
-              <Text style={themedStyles.errorTitle}>⚠ NUTRITION SCAN FAILED</Text>
+              <Text style={themedStyles.errorTitle}>
+                ⚠ {errorKind === 'ai' ? 'HUNTER AI TEMPORARILY UNAVAILABLE' : 'HUNTER AI SERVER UNAVAILABLE'}
+              </Text>
               <Text style={themedStyles.errorBody}>{error}</Text>
               <Pressable style={themedStyles.retryBtn} onPress={fetchRecommendations}>
                 <Text style={themedStyles.retryBtnText}>RETRY SCAN ⟳</Text>
@@ -186,23 +211,16 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
           )}
 
           {/* Offline / server-fallback indicators */}
-          {!loading && isOffline && recs.length > 0 && (
+          {!loading && isFallback && recs.length > 0 && (
             <View style={themedStyles.fallbackBanner}>
               <Text style={themedStyles.fallbackBannerText}>
-                ⚠ OFFLINE MODE — SHOWING EMBEDDED FALLBACK GUIDANCE
-              </Text>
-            </View>
-          )}
-          {!loading && !isOffline && isFallback && recs.length > 0 && (
-            <View style={themedStyles.fallbackBanner}>
-              <Text style={themedStyles.fallbackBannerText}>
-                ⚠ DETERMINISTIC ENGINE — LIVE AI UNAVAILABLE, SERVER FALLBACK ACTIVE
+                ⚠ SERVER FALLBACK — THESE RESULTS WERE NOT GENERATED BY LIVE HUNTER AI
               </Text>
             </View>
           )}
 
           {/* Recommendations */}
-          {!loading && error === '' && recs.length > 0 && (
+          {!loading && recs.length > 0 && (
             <View style={themedStyles.recSection}>
               <Text style={themedStyles.recSectionTitle}>MEAL RECOMMENDATIONS</Text>
               {recs.map((rec, idx) => {
@@ -217,6 +235,7 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
                       <Text style={themedStyles.mealTypeBadgeText}>MEAL {idx + 1}</Text>
                     </View>
                   </View>
+                  {rec.preparationTimeMinutes ? <Text style={themedStyles.portionLabel}>ABOUT {rec.preparationTimeMinutes} MINUTES</Text> : null}
 
                   {/* Portions */}
                   <View style={themedStyles.portionRow}>
@@ -263,6 +282,8 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
                             <Text style={themedStyles.nutritionStatKey}>PROTEIN</Text>
                           </View>
                         )}
+                        {rec.nutrition.carbohydrates !== undefined ? <View style={themedStyles.nutritionStat}><Text style={themedStyles.nutritionStatValue}>{rec.nutrition.carbohydrates}</Text><Text style={themedStyles.nutritionStatKey}>CARBS</Text></View> : null}
+                        {rec.nutrition.fat !== undefined ? <View style={themedStyles.nutritionStat}><Text style={themedStyles.nutritionStatValue}>{rec.nutrition.fat}</Text><Text style={themedStyles.nutritionStatKey}>FAT</Text></View> : null}
                         {rec.nutrition.note && (
                           <Text style={themedStyles.nutritionNote}>{rec.nutrition.note}</Text>
                         )}
@@ -276,6 +297,8 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
                       <Text style={themedStyles.recNoteText}>ℹ {rec.note}</Text>
                     </View>
                   ) : null}
+                  {rec.goalAlignment ? <Text style={themedStyles.recNoteText}>Goal fit: {rec.goalAlignment}</Text> : null}
+                  {rec.substitutions?.length ? <Text style={themedStyles.recNoteText}>Optional swaps: {rec.substitutions.join(', ')}</Text> : null}
                 </View>
                 );
               })}
@@ -351,6 +374,8 @@ const styles = StyleSheet.create({
   headerTextBlock: {
     flex: 1,
   },
+  historyBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 7, borderWidth: 1, borderColor: '#1c3d5e' },
+  historyBtnText: { color: '#00f3ff', fontSize: 9, fontWeight: '900' },
   systemTag: {
     color: '#00f3ff',
     fontSize: 8,
@@ -404,6 +429,12 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 12,
   },
+  input: { color: '#d7e8f5', borderWidth: 1, borderColor: '#1c3d5e', backgroundColor: '#04111e', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 9, marginTop: 7, fontSize: 11 },
+  formLabel: { color: '#7094b2', fontSize: 9, fontWeight: '900', letterSpacing: 1, marginTop: 10, marginBottom: 5 },
+  choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 3 },
+  choice: { borderWidth: 1, borderColor: '#1c3d5e', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 8 },
+  choiceActive: { borderColor: '#00f3ff', backgroundColor: '#0a2639' },
+  choiceText: { color: '#c8dff0', fontSize: 10, fontWeight: '800' },
   contextRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

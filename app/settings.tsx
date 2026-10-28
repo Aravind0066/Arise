@@ -61,7 +61,7 @@ export default function SettingsScreen() {
             </Pressable>
             <View style={themedStyles.headerTextBlock}>
               <Text style={[themedStyles.systemTag, { color: theme.accent, fontSize: typography.label }]}>
-                SYSTEM // CONFIGURATION
+                Configuration
               </Text>
               <Text style={[themedStyles.pageTitle, { color: theme.textPrimary, fontSize: typography.heading }]}>
                 APPEARANCE

@@ -23,8 +23,16 @@ const ACCOUNT_KEYS = [
   'hunteros.workout.v2',
   'hunteros.achievements.v2',
   'hunteros.screentime.v2',
+  'hunteros.dailyWorkoutPlan.v1',
+  'hunteros.workoutPlans.v1',
+  'hunteros.nutritionHistory.v1',
+  'hunteros.chat.conversations.v1',
+  'hunteros.chat.active.v1',
+  'hunteros.questRecommendations.v1',
+  'hunteros.rewardClaims.v1',
   'arise.currentUser',
   'hunteros.onboardingDraft.v1',
+  'hunteros.goalProgress.v1',
 ];
 
 const APPEARANCE_KEY = 'hunteros.appearance.v1';
@@ -46,9 +54,11 @@ test('Account deletion: resetAllData key list matches hunterStorage implementati
   assert.ok(source.includes('PROFILE_KEY'));
   assert.ok(source.includes('CURRENT_USER_KEY'));
   assert.ok(source.includes('ONBOARDING_DRAFT_KEY'));
+  assert.ok(source.includes('GOAL_PROGRESS_KEY'));
   assert.ok(match[1].includes('PROFILE_KEY'));
   assert.ok(match[1].includes('CURRENT_USER_KEY'));
   assert.ok(match[1].includes('ONBOARDING_DRAFT_KEY'));
+  assert.ok(match[1].includes('GOAL_PROGRESS_KEY'));
   assert.ok(!match[1].includes('APPEARANCE'), 'Appearance prefs must not be wiped by resetAllData');
 });
 

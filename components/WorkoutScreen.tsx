@@ -17,14 +17,20 @@ import {
   getHunterStats,
   getHunterProfile,
   getWorkoutLogs,
+  getSavedDailyWorkoutPlan,
   recordWorkoutCompletion,
   saveDailyWorkoutPlan,
+  getWorkoutPreferences,
+  saveWorkoutPreferences,
 } from '../lib/hunterStorage';
-import { Exercise, HunterProfile, HunterStats, WorkoutLog, WorkoutRoutine } from '../lib/hunterTypes';
+import { Exercise, HunterProfile, HunterStats, WorkoutLog, WorkoutRoutine, WorkoutMode } from '../lib/hunterTypes';
 import { getPersonalizedWorkout } from '../lib/workoutEngine';
 import { generateAdjustedWorkoutPlan, getOrCreateDailyWorkoutPlan } from '../lib/dailyWorkout';
 import { getLocalWorkoutDate, type WorkoutPlanAdjustment } from '../lib/workoutPlanUtils';
 import { getWorkoutActivity } from '../lib/workoutActivity';
+import { useInternetConnectivity } from '../lib/ConnectivityContext';
+import { onlineRequestErrorMessage } from '../lib/connectivityRules';
+import { OfflineNotice } from './OfflineNotice';
 
 type WorkoutPhase = 'landing' | 'preparation' | 'active' | 'rest' | 'completed';
 
@@ -77,12 +83,13 @@ function WorkoutActivityWidget({ logs }: { logs: WorkoutLog[] }) {
   );
 }
 
-type WorkoutScreenProps = { embedded?: boolean; children?: React.ReactNode };
+type WorkoutScreenProps = { embedded?: boolean; onWorkoutCompleted?: () => void };
 
-export default function WorkoutScreen({ embedded = false, children }: WorkoutScreenProps) {
+export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: WorkoutScreenProps) {
   const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
   const router = useRouter();
+  const { status: internetStatus, refresh } = useInternetConnectivity();
   const params = useLocalSearchParams<{ questId?: string; routineId?: string; workoutTitle?: string }>();
 
   const [profile, setProfile] = useState<HunterProfile | null>(null);
@@ -92,7 +99,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   const [isPlanLoading, setIsPlanLoading] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [isRestDay, setIsRestDay] = useState(false);
-  const [planSource, setPlanSource] = useState<'ai' | 'fallback' | 'rest' | null>(null);
+  const [planSource, setPlanSource] = useState<'ai' | 'ollama' | 'fallback' | 'rest' | null>(null);
   const [planNotice, setPlanNotice] = useState('');
   const [phase, setPhase] = useState<WorkoutPhase>('landing');
   const [loadError, setLoadError] = useState('');
@@ -117,6 +124,8 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   // Metrics for completion
   const [totalSecondsElapsed, setTotalSecondsElapsed] = useState(0);
   const [completedExercisesCount, setCompletedExercisesCount] = useState(0);
+  const [completedExerciseIds, setCompletedExerciseIds] = useState<string[]>([]);
+  const exerciseFinishInFlight = useRef(false);
   const [showExitModal, setShowExitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const planAbortRef = useRef<AbortController | null>(null);
@@ -128,6 +137,8 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
     statRaised: string;
     statBonus: number;
   } | null>(null);
+  const [workoutMode, setWorkoutMode] = useState<WorkoutMode>('bodyweight');
+  const [equipmentDraft, setEquipmentDraft] = useState('');
 
   // Load saved profile and completion history; generating a plan is an explicit action.
   useEffect(() => {
@@ -136,10 +147,26 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
       const p = await getHunterProfile();
       const stats = await getHunterStats();
       const logs = await getWorkoutLogs();
+      const savedPlan = await getSavedDailyWorkoutPlan();
+      const preferences = await getWorkoutPreferences();
       if (cancelled) return;
       setProfile(p);
       setStats(stats);
       setWorkoutLogs(logs);
+      setWorkoutMode(preferences.mode);
+      setEquipmentDraft(preferences.equipment.join(', '));
+      if (!params.routineId && savedPlan?.localDate === getLocalWorkoutDate()) {
+        setRoutine(savedPlan.routine);
+        setIsRestDay(savedPlan.isRestDay);
+        setPlanSource(savedPlan.source);
+        setPlanNotice(savedPlan.message || (savedPlan.source === 'ollama' || savedPlan.source === 'ai' ? 'Saved Ollama plan restored for today.' : 'Saved plan restored for today.'));
+        if (savedPlan.isRestDay) setPhase('rest');
+        else if (savedPlan.routine) {
+          setAdjustment({ durationMinutes: savedPlan.routine.durationMinutes, difficulty: savedPlan.routine.difficulty, equipment: savedPlan.routine.equipment, targetFocus: 'Full Body' });
+          setDurationDraft(String(savedPlan.routine.durationMinutes));
+          setPhase('preparation');
+        }
+      }
       if (params.routineId) {
         setRoutine(getPersonalizedWorkout(p, params.routineId));
         setPhase('preparation');
@@ -156,18 +183,28 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   }, [params.routineId]);
 
   const prepareTodayWorkout = async (forceRefresh = false) => {
-    if (isPlanLoading || !stats) return;
+    if (planAbortRef.current || isPlanLoading || !stats) return;
     const controller = new AbortController();
     planAbortRef.current = controller;
     setIsPlanLoading(true);
     setLoadError('');
     if (!routine) setPlanNotice('');
     try {
-      const dailyPlan = await getOrCreateDailyWorkoutPlan(profile, stats, new Date(), controller.signal, forceRefresh);
+      const equipment = equipmentDraft.split(',').map((item) => item.trim()).filter(Boolean);
+      const preferences = { mode: workoutMode, equipment: workoutMode === 'bodyweight' ? [] : equipment };
+      await saveWorkoutPreferences(preferences);
+      const dailyPlan = await getOrCreateDailyWorkoutPlan(
+        profile,
+        stats,
+        new Date(),
+        controller.signal,
+        forceRefresh,
+        preferences,
+      );
       setIsRestDay(dailyPlan.isRestDay);
       setPlanSource(dailyPlan.source);
       setRoutine(dailyPlan.routine);
-      setPlanNotice(dailyPlan.message ?? (dailyPlan.source === 'ai' ? 'Personalized AI plan saved for today.' : ''));
+      setPlanNotice(dailyPlan.message ?? (dailyPlan.source === 'ollama' || dailyPlan.source === 'ai' ? 'Personalized Ollama plan saved for today.' : ''));
       if (dailyPlan.isRestDay) setPhase('rest');
       else if (dailyPlan.routine) {
         setAdjustment((current) => ({
@@ -179,9 +216,11 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
         setPhase('preparation');
       }
     } catch (error) {
-      setLoadError(controller.signal.aborted
-        ? 'Workout request cancelled. You can try again when ready.'
-        : error instanceof Error ? error.message : 'Could not prepare today’s workout. Check your connection and try again.');
+      if (controller.signal.aborted) setLoadError('Workout request cancelled. You can try again when ready.');
+      else {
+        const currentStatus = await refresh();
+        setLoadError(currentStatus === 'offline' ? '' : onlineRequestErrorMessage(error, currentStatus));
+      }
     } finally {
       if (planAbortRef.current === controller) planAbortRef.current = null;
       setIsPlanLoading(false);
@@ -191,7 +230,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   const cancelPlanRequest = () => planAbortRef.current?.abort();
 
   const submitPlanAdjustment = async () => {
-    if (!routine || !stats || isAdjusting) return;
+    if (!routine || !stats || adjustAbortRef.current || isAdjusting) return;
     const controller = new AbortController();
     adjustAbortRef.current = controller;
     setIsAdjusting(true);
@@ -201,13 +240,19 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
       const requestedAdjustment = { ...adjustment, durationMinutes };
       setAdjustment(requestedAdjustment);
       setDurationDraft(String(durationMinutes));
-      const revisedRoutine = await generateAdjustedWorkoutPlan(profile, stats, requestedAdjustment, new Date(), controller.signal);
+      const selectedEquipment = workoutMode === 'bodyweight' ? [] : equipmentDraft.split(',').map((item) => item.trim()).filter(Boolean);
+      await saveWorkoutPreferences({ mode: workoutMode, equipment: selectedEquipment });
+      const generated = await generateAdjustedWorkoutPlan(profile, stats, requestedAdjustment, new Date(), controller.signal);
+      const revisedRoutine = { ...generated.routine, id: `daily-ai-${getLocalWorkoutDate()}-${Date.now()}` };
       await saveDailyWorkoutPlan({
         localDate: getLocalWorkoutDate(),
         restDay: profile?.restDay?.trim() ?? '',
         isRestDay: false,
         routine: revisedRoutine,
-        source: 'ai',
+        source: 'ollama',
+        mode: generated.preferences.mode,
+        equipment: generated.preferences.equipment,
+        contextSnapshot: generated.contextSnapshot,
         message: 'Adjusted AI plan saved for today.',
       });
       setRoutine(revisedRoutine);
@@ -215,9 +260,11 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
       setPlanNotice('Adjusted AI plan saved for today. Review it before starting.');
       setAdjustModalVisible(false);
     } catch (error) {
-      setAdjustError(controller.signal.aborted
-        ? 'Adjustment cancelled. The current plan is unchanged.'
-        : error instanceof Error ? error.message : 'Could not adjust this plan. The current plan is unchanged.');
+      if (controller.signal.aborted) setAdjustError('Adjustment cancelled. The current plan is unchanged.');
+      else {
+        const currentStatus = await refresh();
+        setAdjustError(currentStatus === 'offline' ? '' : onlineRequestErrorMessage(error, currentStatus));
+      }
     } finally {
       if (adjustAbortRef.current === controller) adjustAbortRef.current = null;
       setIsAdjusting(false);
@@ -296,17 +343,29 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
     if (!routine || routine.exercises.length === 0) return;
     setCurrentIndex(0);
     setCompletedExercisesCount(0);
+    setCompletedExerciseIds([]);
+    exerciseFinishInFlight.current = false;
     setTotalSecondsElapsed(0);
     initExerciseState(routine.exercises[0]);
     setPhase('active');
   };
 
-  const handleExerciseFinished = () => {
-    if (!routine) return;
+  const handleExerciseFinished = async () => {
+    if (!routine || exerciseFinishInFlight.current) return;
+    exerciseFinishInFlight.current = true;
+    const doneIds = Array.from(new Set([...completedExerciseIds, routine.exercises[currentIndex]?.id].filter((id): id is string => Boolean(id))));
+    setCompletedExerciseIds(doneIds);
+    try {
+      const saved = await getSavedDailyWorkoutPlan();
+      if (saved?.routine?.id === routine.id) await saveDailyWorkoutPlan({ ...saved, completedExerciseIds: Array.from(new Set([...(saved.completedExerciseIds ?? []), ...doneIds])) });
+    } catch {
+      Alert.alert('Progress not saved', 'This exercise is complete for this session, but the completion could not be saved locally.');
+    }
     setCompletedExercisesCount((c) => c + 1);
 
     // If this was the last exercise, finish workout!
     if (currentIndex >= routine.exercises.length - 1) {
+      exerciseFinishInFlight.current = false;
       finalizeWorkout();
       return;
     }
@@ -315,8 +374,10 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
     const rest = currentExercise?.restSeconds || 25;
     if (rest > 0) {
       setRestTimeRemaining(rest);
+      exerciseFinishInFlight.current = false;
       setPhase('rest');
     } else {
+      exerciseFinishInFlight.current = false;
       advanceToNextExercise();
     }
   };
@@ -325,6 +386,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
     if (!routine) return;
     const nextIdx = currentIndex + 1;
     if (nextIdx < routine.exercises.length) {
+      exerciseFinishInFlight.current = false;
       setCurrentIndex(nextIdx);
       initExerciseState(routine.exercises[nextIdx]);
       setPhase('active');
@@ -357,7 +419,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
     setIsSubmitting(true);
 
     try {
-      const res = await recordWorkoutCompletion({
+      await recordWorkoutCompletion({
         workoutName: routine.title,
         routineId: routine.id,
         questId: params.questId,
@@ -374,6 +436,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
         statRaised: routine.targetStat.toUpperCase(),
         statBonus: routine.statBonus,
       });
+      onWorkoutCompleted?.();
       setPhase('completed');
     } catch (err: any) {
       Alert.alert('System Error', err.message || 'Failed to record workout');
@@ -413,7 +476,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   if (isPlanLoading && !embedded) {
     return (
       <View style={themedStyles.centerRoot}>
-        <Text style={themedStyles.loadingText}>PREPARING TODAY'S WORKOUT...</Text>
+        <Text style={themedStyles.loadingText}>PREPARING TODAY&apos;S WORKOUT...</Text>
         <Pressable style={themedStyles.cancelRequestBtn} onPress={cancelPlanRequest}>
           <Text style={themedStyles.cancelRequestText}>CANCEL REQUEST</Text>
         </Pressable>
@@ -437,6 +500,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
           ) : null}
           <WorkoutFlowScroller embedded={embedded} contentContainerStyle={themedStyles.landingContent}>
             <WorkoutActivityWidget logs={workoutLogs} />
+
             <View style={themedStyles.landingPlanCard}>
               <Text style={themedStyles.landingPlanTitle}>TODAY’S PROTOCOL</Text>
               <Text style={themedStyles.restDayTitle}>TODAY IS A REST DAY</Text>
@@ -446,7 +510,6 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
                 <Text style={themedStyles.startWorkoutBtnText}>REST DAY — NO PLAN TO PREPARE</Text>
               </Pressable>
             </View>
-            {children}
           </WorkoutFlowScroller>
         </SafeAreaView>
       </View>
@@ -468,9 +531,16 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
           <WorkoutFlowScroller embedded={embedded} contentContainerStyle={themedStyles.landingContent}>
             <WorkoutActivityWidget logs={workoutLogs} />
 
+            <OfflineNotice visible={internetStatus === 'offline'} />
+
             <View style={themedStyles.landingPlanCard}>
               <Text style={themedStyles.landingPlanTitle}>TODAY’S PROTOCOL</Text>
               <Text style={themedStyles.landingPlanCopy}>Your plan uses saved profile details, fitness level, goals, and recovery preferences when available.</Text>
+              <Text style={{ color: theme.textPrimary, fontSize: 11, fontWeight: '800', marginBottom: 6 }}>WORKOUT MODE</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 10 }}>
+                {([{ key: 'home', label: 'Home Workout' }, { key: 'gym', label: 'Gym Workout' }, { key: 'bodyweight', label: 'Bodyweight Only' }, { key: 'custom', label: 'Custom Equipment' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border, backgroundColor: workoutMode === key ? theme.surfaceAlt : 'transparent' }}><Text style={{ color: theme.textPrimary, fontSize: 11 }}>{label}</Text></Pressable>)}
+              </View>
+              {workoutMode !== 'bodyweight' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available equipment, comma separated" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 10, marginBottom: 10 }} /> : null}
               {loadError ? <Text style={themedStyles.planError}>{loadError}</Text> : null}
               {isProfileLoading ? <Text style={themedStyles.landingPlanCopy}>Loading your saved profile…</Text> : null}
               <Pressable
@@ -486,7 +556,9 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
                 </Pressable>
               ) : null}
             </View>
-            {children}
+            <Pressable style={themedStyles.cancelRequestBtn} onPress={() => router.push('/workout-history' as any)}>
+              <Text style={themedStyles.cancelRequestText}>VIEW WORKOUT HISTORY</Text>
+            </Pressable>
           </WorkoutFlowScroller>
         </SafeAreaView>
       </View>
@@ -522,8 +594,14 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
 
           <WorkoutFlowScroller embedded={embedded} contentContainerStyle={themedStyles.prepContent}>
             <WorkoutActivityWidget logs={workoutLogs} />
+            <OfflineNotice visible={internetStatus === 'offline'} />
             <View style={themedStyles.landingPlanCard}>
               <Text style={themedStyles.landingPlanTitle}>TODAY’S PROTOCOL</Text>
+              <Text style={{ color: theme.textPrimary, fontSize: 11, fontWeight: '800' }}>WORKOUT MODE · {workoutMode.toUpperCase()}</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginVertical: 8 }}>
+                {([{ key: 'home', label: 'Home Workout' }, { key: 'gym', label: 'Gym Workout' }, { key: 'bodyweight', label: 'Bodyweight Only' }, { key: 'custom', label: 'Custom Equipment' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 7, paddingHorizontal: 9, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border }}><Text style={{ color: theme.textPrimary, fontSize: 10 }}>{label}</Text></Pressable>)}
+              </View>
+              {workoutMode !== 'bodyweight' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available equipment" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 9, marginBottom: 8 }} /> : null}
               {loadError ? <Text style={themedStyles.planError}>{loadError}</Text> : null}
               <Pressable
                 style={[themedStyles.startWorkoutBtn, isPlanLoading && themedStyles.disabledAction]}
@@ -533,11 +611,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
                 <Text style={themedStyles.startWorkoutBtnText}>{isPlanLoading ? 'PREPARING…' : "PREPARE TODAY'S WORKOUT"}</Text>
               </Pressable>
               {isPlanLoading ? <Pressable style={themedStyles.cancelRequestBtn} onPress={cancelPlanRequest}><Text style={themedStyles.cancelRequestText}>CANCEL REQUEST</Text></Pressable> : null}
-              {planSource === 'fallback' && !isPlanLoading ? (
-                <Pressable style={themedStyles.retryPlanBtn} onPress={() => prepareTodayWorkout(true)}>
-                  <Text style={themedStyles.retryPlanText}>RETRY AI GENERATION</Text>
-                </Pressable>
-              ) : null}
+              {!isPlanLoading && planSource !== 'rest' ? <Pressable style={themedStyles.retryPlanBtn} onPress={() => prepareTodayWorkout(true)}><Text style={themedStyles.retryPlanText}>{planSource === 'fallback' ? 'RETRY AI GENERATION' : 'GENERATE REPLACEMENT PLAN'}</Text></Pressable> : null}
             </View>
             {/* Mission Dossier Card */}
             <View style={themedStyles.missionCard}>
@@ -613,24 +687,36 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
                 </View>
               ))}
             </View>
-            {children}
+            {embedded ? (
+              <View style={themedStyles.embeddedBottomCtaBar}>
+                <Pressable style={themedStyles.adjustPlanBtn} onPress={() => { setAdjustError(''); setDurationDraft(String(adjustment.durationMinutes)); setAdjustModalVisible(true); }}>
+                  <Text style={themedStyles.adjustPlanBtnText}>ADJUST PLAN</Text>
+                </Pressable>
+                <Pressable style={[themedStyles.startWorkoutBtn, themedStyles.startWorkoutFlex]} onPress={startWorkout}>
+                  <Text style={themedStyles.startWorkoutBtnText}>START WORKOUT RAID ➔</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </WorkoutFlowScroller>
 
-          {/* Fixed Bottom Action CTA */}
-          <View style={[themedStyles.bottomCtaBar, embedded && themedStyles.embeddedBottomCtaBar]}>
-            <Pressable style={themedStyles.adjustPlanBtn} onPress={() => { setAdjustError(''); setDurationDraft(String(adjustment.durationMinutes)); setAdjustModalVisible(true); }}>
-              <Text style={themedStyles.adjustPlanBtnText}>ADJUST PLAN</Text>
-            </Pressable>
-            <Pressable style={[themedStyles.startWorkoutBtn, themedStyles.startWorkoutFlex]} onPress={startWorkout}>
-              <Text style={themedStyles.startWorkoutBtnText}>START WORKOUT RAID ➔</Text>
-            </Pressable>
-          </View>
+          {/* Standalone screen action bar */}
+          {!embedded ? (
+            <View style={themedStyles.bottomCtaBar}>
+              <Pressable style={themedStyles.adjustPlanBtn} onPress={() => { setAdjustError(''); setDurationDraft(String(adjustment.durationMinutes)); setAdjustModalVisible(true); }}>
+                <Text style={themedStyles.adjustPlanBtnText}>ADJUST PLAN</Text>
+              </Pressable>
+              <Pressable style={[themedStyles.startWorkoutBtn, themedStyles.startWorkoutFlex]} onPress={startWorkout}>
+                <Text style={themedStyles.startWorkoutBtnText}>START WORKOUT RAID ➔</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           <Modal visible={adjustModalVisible} transparent animationType="fade" onRequestClose={() => setAdjustModalVisible(false)}>
             <View style={themedStyles.modalBackdrop}>
               <ScrollView contentContainerStyle={themedStyles.adjustModalScroll} keyboardShouldPersistTaps="handled">
                 <View style={themedStyles.adjustModalCard}>
                   <Text style={themedStyles.adjustModalTitle}>ADJUST TODAY’S PLAN</Text>
+                  <OfflineNotice visible={internetStatus === 'offline'} />
                   <Text style={themedStyles.adjustModalCopy}>A revised recommendation will replace today’s saved plan only after it validates successfully.</Text>
                   <Text style={themedStyles.adjustLabel}>DURATION (MINUTES)</Text>
                   <TextInput
@@ -692,7 +778,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
         <SafeAreaView style={[themedStyles.safe, embedded && themedStyles.embeddedSafe]} edges={embedded ? [] : ['top', 'bottom']}>
           <View style={themedStyles.restCardContainer}>
             <View style={themedStyles.restBadge}>
-              <Text style={themedStyles.restBadgeText}>SYSTEM // CELLULAR REHYDRATION</Text>
+              <Text style={themedStyles.restBadgeText}>CELLULAR REHYDRATION</Text>
             </View>
 
             <Text style={themedStyles.restHeaderTitle}>REST & RECOVER</Text>
@@ -740,7 +826,6 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
   if (phase === 'active' && currentExercise) {
     const isTimed = currentExercise.type === 'timed';
     const totalExercises = routine.exercises.length;
-    const progressPercent = Math.round(((currentIndex + 1) / totalExercises) * 100);
 
     return (
       <View style={[themedStyles.root, embedded && themedStyles.embeddedRoot]}>
@@ -785,7 +870,7 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
             </View>
           )}
 
-          <ScrollView contentContainerStyle={themedStyles.activeScroll} showsVerticalScrollIndicator={false}>
+          <WorkoutFlowScroller embedded={embedded} contentContainerStyle={themedStyles.activeScroll}>
             {/* Exercise Movement Graphic */}
             <View style={themedStyles.illustrationWrapper}>
               <ExerciseIllustration
@@ -846,10 +931,10 @@ export default function WorkoutScreen({ embedded = false, children }: WorkoutScr
                 </View>
               )}
             </View>
-          </ScrollView>
+          </WorkoutFlowScroller>
 
           {/* Bottom Action Controls */}
-          <View style={themedStyles.activeBottomBar}>
+          <View style={embedded ? themedStyles.embeddedActiveBottomBar : themedStyles.activeBottomBar}>
             <Pressable style={themedStyles.skipExerciseBtn} onPress={skipCurrentExercise}>
               <Text style={themedStyles.skipExerciseBtnText}>SKIP ➔</Text>
             </Pressable>
@@ -962,9 +1047,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#040b14',
   },
-  embeddedRoot: { flex: 0, width: '100%' },
-  embeddedSafe: { flex: 0 },
-  embeddedBottomCtaBar: { position: 'relative', bottom: undefined },
+  // These wrappers live inside ToolsScreen's ScrollView. `flex: 0` becomes
+  // `0 1 0%` on web, collapsing their measured height to zero and letting
+  // following siblings paint over the workout content. Keep intrinsic height.
+  embeddedRoot: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', width: '100%' },
+  embeddedSafe: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto' },
+  embeddedBottomCtaBar: {
+    backgroundColor: '#040b14',
+    borderTopWidth: 1,
+    borderTopColor: '#16314c',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  embeddedActiveBottomBar: {
+    backgroundColor: '#040b14',
+    borderTopWidth: 1,
+    borderTopColor: '#16314c',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    gap: 12,
+  },
   safe: {
     flex: 1,
   },

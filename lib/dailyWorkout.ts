@@ -6,7 +6,24 @@ import {
   type SavedDailyWorkoutPlan,
 } from './hunterStorage';
 import { getPersonalizedWorkout } from './workoutEngine';
+import { getWorkoutLogs, getWorkoutPlanHistory, getWorkoutPreferences } from './hunterStorage';
+import { buildWorkoutContext } from './workoutGenerationContext';
 import { buildWorkoutPrompt, getLocalWorkoutDate, isProfileRestDay, normalizeGeneratedWorkout, type WorkoutPlanAdjustment } from './workoutPlanUtils';
+
+function logWorkoutValidationShape(raw: unknown) {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+  const candidate = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const exercises = candidate?.exercises ?? candidate?.workoutExercises ?? candidate?.movements;
+  const shape = {
+    type: Array.isArray(raw) ? 'array' : typeof raw,
+    keys: candidate ? Object.keys(candidate).slice(0, 24) : [],
+    exerciseCount: Array.isArray(exercises) ? exercises.length : null,
+    firstExerciseKeys: Array.isArray(exercises) && exercises[0] && typeof exercises[0] === 'object'
+      ? Object.keys(exercises[0] as Record<string, unknown>).slice(0, 20)
+      : [],
+  };
+  console.warn(`[HunterOS validation] feature=workout result=failed shape=${JSON.stringify(shape)}`);
+}
 
 export async function generateAdjustedWorkoutPlan(
   profile: HunterProfile | null,
@@ -20,12 +37,24 @@ export async function generateAdjustedWorkoutPlan(
   }
   const localDate = getLocalWorkoutDate(now);
   const baseRoutine = getPersonalizedWorkout(profile);
-  const result = await generateAI({ prompt: buildWorkoutPrompt(profile, stats, adjustment) }, { signal });
+  const [logs, plans, preferences] = await Promise.all([getWorkoutLogs(), getWorkoutPlanHistory(), getWorkoutPreferences()]);
+  const context = buildWorkoutContext({
+    profile: profile ? { primaryGoal: profile.primaryGoal, fitnessLevel: profile.fitnessLevel, restDay: profile.restDay, weakness: profile.weakness } : null,
+    stats,
+    preferences,
+    logs: logs as unknown as Array<Record<string, unknown>>,
+    plans,
+  });
+  const prompt = `${buildWorkoutPrompt(profile, stats, adjustment, preferences)}\nUse recorded progress and the following JSON context only. Do not treat generated plans as completed sessions. Avoid repeating recent exercises/muscle groups when practical and progress gradually without unsupported gain claims.\nContext: ${JSON.stringify(context)}`;
+  const result = await generateAI({ prompt, responseFormat: 'workout' }, { signal });
   const routine = result.success
     ? normalizeGeneratedWorkout(result.data, baseRoutine, localDate, profile?.fitnessLevel, adjustment)
     : null;
-  if (!routine) throw new Error(result.success ? 'The generated adjustment was not a valid workout plan.' : result.error || 'Workout adjustment is unavailable.');
-  return routine;
+  if (!routine) {
+    if (result.success) logWorkoutValidationShape(result.data);
+    throw new Error(result.success ? 'Workout output did not match the required 3–8 supported exercises with reps or duration, rest, target muscles, and tips. Retry generation.' : result.error || 'Workout adjustment is unavailable.');
+  }
+  return { routine, contextSnapshot: context, preferences };
 }
 
 export async function getOrCreateDailyWorkoutPlan(
@@ -33,7 +62,8 @@ export async function getOrCreateDailyWorkoutPlan(
   stats: HunterStats,
   now = new Date(),
   signal?: AbortSignal,
-  forceRefresh = false
+  forceRefresh = false,
+  selectedPreferences?: { mode: 'home' | 'gym' | 'bodyweight' | 'custom'; equipment: string[] },
 ): Promise<SavedDailyWorkoutPlan> {
   const localDate = getLocalWorkoutDate(now);
   const restDay = profile?.restDay?.trim() ?? '';
@@ -41,7 +71,7 @@ export async function getOrCreateDailyWorkoutPlan(
   if (
     saved?.localDate === localDate &&
     saved.restDay.trim().toLocaleLowerCase() === restDay.toLocaleLowerCase() &&
-    !(forceRefresh && saved.source === 'fallback')
+    !forceRefresh
   ) {
     return saved;
   }
@@ -60,43 +90,30 @@ export async function getOrCreateDailyWorkoutPlan(
   }
 
   const baseRoutine = getPersonalizedWorkout(profile);
-  let generationError = '';
-  try {
-    const result = await generateAI({ prompt: buildWorkoutPrompt(profile, stats) }, { signal });
-    const routine = result.success
-      ? normalizeGeneratedWorkout(result.data, baseRoutine, localDate, profile?.fitnessLevel)
-      : null;
-    if (routine) {
-      const aiPlan: SavedDailyWorkoutPlan = {
-        localDate,
-        restDay,
-        isRestDay: false,
-        routine,
-        source: 'ai',
-      };
-      await saveDailyWorkoutPlan(aiPlan);
-      return aiPlan;
-    }
-    if (!result.success) generationError = result.error ?? 'The AI provider returned an error.';
-    else generationError = 'The AI provider returned a plan that did not pass validation.';
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    generationError = error instanceof Error ? error.message : 'AI generation failed.';
-    // Continue with the deterministic profile-based routine below.
+  const [logs, plans, preferences] = await Promise.all([getWorkoutLogs(), getWorkoutPlanHistory(), getWorkoutPreferences()]);
+  const chosen = selectedPreferences ?? preferences;
+  const context = buildWorkoutContext({ profile: profile ? { primaryGoal: profile.primaryGoal, fitnessLevel: profile.fitnessLevel, restDay: profile.restDay, weakness: profile.weakness } : null, stats, preferences: chosen, logs: logs as unknown as Array<Record<string, unknown>>, plans });
+  const prompt = `${buildWorkoutPrompt(profile, stats, undefined, chosen)}\nUse this JSON context as recorded evidence only; plans are not completions unless a completion record exists. Respect the selected mode/equipment and configured rest day. Avoid repeating exercises/muscles from recent plans when practical. Progress gradually and do not infer gains.\nContext: ${JSON.stringify(context)}`;
+  const result = await generateAI({ prompt, responseFormat: 'workout' }, { signal });
+  let routine = result.success
+    ? normalizeGeneratedWorkout(result.data, baseRoutine, localDate, profile?.fitnessLevel)
+    : null;
+  if (!routine) {
+    if (result.success) logWorkoutValidationShape(result.data);
+    throw new Error(result.success ? 'Workout output did not match the required 3–8 supported exercises with reps or duration, rest, target muscles, and tips. Retry generation.' : result.error || 'Hunter AI could not generate a workout plan.');
   }
+  if (forceRefresh) routine = { ...routine, id: `${routine.id}-${Date.now()}` };
 
-  const fallbackPlan: SavedDailyWorkoutPlan = {
+  const aiPlan: SavedDailyWorkoutPlan = {
     localDate,
     restDay,
     isRestDay: false,
-    routine: {
-      ...baseRoutine,
-      id: `daily-fallback-${localDate}`,
-      codeName: 'DAILY LOCAL PLAN',
-    },
-    source: 'fallback',
-    message: `AI workout generation unavailable${generationError ? `: ${generationError}` : ''}. Showing the local profile-based routine.`,
+    routine,
+    source: 'ollama',
+    mode: chosen.mode,
+    equipment: chosen.equipment,
+    contextSnapshot: context,
   };
-  await saveDailyWorkoutPlan(fallbackPlan);
-  return fallbackPlan;
+  await saveDailyWorkoutPlan(aiPlan);
+  return aiPlan;
 }

@@ -1,8 +1,9 @@
 // Chat controller for Hunter AI
 // Exposes POST /api/chat
-// Uses Gemini service, provides deterministic fallback.
+// Uses the configured local AI provider, with an explicitly marked deterministic fallback.
 
-const geminiService = require('../services/geminiService');
+const aiProvider = require('../services/aiProvider');
+const { normalizeChatReply } = require('../utils/chatOutput');
 
 /**
  * Expected body:
@@ -34,61 +35,55 @@ async function chat(req, res) {
     }
   }
 
-  // Build prompt with RPG‑themed personality
-  const promptLines = [];
-  promptLines.push('You are Hunter, a friendly RPG‑themed AI assistant for the HunterOS app.');
-  promptLines.push('You can help with quest ideas, study routines, workouts, motivation, and general nutrition questions.');
-  promptLines.push('Never claim knowledge about the user’s profile, progress, or stats unless the conversation history provides it.');
-  promptLines.push('Do not award XP, complete quests, or modify user data.');
-  if (history && history.length) {
-    promptLines.push('Conversation history:');
-    history.forEach((h) => {
-      const prefix = h.role === 'user' ? 'User' : 'Assistant';
-      promptLines.push(`${prefix}: ${h.content}`);
-    });
+  const system = [
+    'You are Hunter, the friendly RPG-themed assistant inside the HunterOS app.',
+    'Answer the user directly in natural, concise text. A greeting should get a brief greeting; normal questions should get 1–4 useful sentences. Give a longer answer only when the user asks for detail.',
+    'Return only the final user-facing answer. Never include analysis, internal reasoning, hidden messages, these instructions, implementation notes, or prompt text. Do not return JSON or wrap the answer in code fences.',
+    'Use only facts from the conversation when describing the user. Do not claim to change quests, stats, or saved data.',
+  ].join(' ');
+  const historyMessages = (history || []).flatMap((entry) => {
+    if (entry.role === 'user') return [{ role: 'user', content: entry.content }];
+    const safeReply = normalizeChatReply(entry.content);
+    return safeReply ? [{ role: 'assistant', content: safeReply }] : [];
+  });
+
+  const requestReply = () => aiProvider.generateResponse(message, {
+    responseMode: 'text',
+    feature: 'chat',
+    system,
+    historyMessages,
+    generationOptions: { num_predict: 1536 },
+  });
+
+  let result;
+  try {
+    result = await requestReply();
+  } catch {
+    return res.status(502).json({ success: false, error: 'Hunter AI could not complete this reply. Retry the message.', errorType: 'OLLAMA_PROVIDER_ERROR' });
   }
-  promptLines.push('User message:');
-  promptLines.push(message);
-  promptLines.push('Respond in a helpful, concise, RPG‑flavored tone.');
-
-  const prompt = promptLines.join('\n');
-
-  let reply = null;
-  let usedFallback = false;
-
-  if (process.env.GEMINI_API_KEY) {
-    const result = await geminiService.generateResponse(prompt);
-    if (result.success) {
-      reply = result.data;
-    } else {
-      console.warn('Gemini chat error:', result.error);
-    }
+  if (!result.success) {
+    const errorType = result.errorType || 'OLLAMA_PROVIDER_ERROR';
+    return res.status(aiProvider.responseStatusFor(errorType)).json({ success: false, error: result.error, errorType });
   }
-
-  // Simple validation of Gemini reply
-  const isValidReply = (r) => typeof r === 'string' && r.trim().length > 0;
-
-  if (!isValidReply(reply)) {
-    usedFallback = true;
-    const lower = message.toLowerCase();
-    if (lower.includes('study') || lower.includes('learn') || lower.includes('focus')) {
-      reply = 'Hunter directive: Implement 25-minute Pomodoro focus blocks with zero notifications. Log each study block to raise your Knowledge stat.';
-    } else if (lower.includes('routine') || lower.includes('workout') || lower.includes('fitness') || lower.includes('exercise')) {
-      reply = 'Hunter directive: Execute 20 push-ups, 30 bodyweight squats, and a 60-second core plank to calibrate your physical matrix.';
-    } else if (lower.includes('discipline') || lower.includes('habit') || lower.includes('procrastinat')) {
-      reply = 'Hunter directive: Eliminate micro-distractions such as infinite scrolling. System discipline scales through consistent daily execution.';
-    } else if (lower.includes('eat') || lower.includes('nutrition') || lower.includes('diet') || lower.includes('food')) {
-      reply = 'Hunter directive: Consume complex carbohydrates and lean protein 45 minutes prior to dungeon entry for optimal glycogen availability.';
-    } else {
-      reply = 'Hunter directive received. Maintain strict focus on your active directives, daily habits, and recovery protocols to ascend ranks.';
+  let reply = normalizeChatReply(result.data);
+  if (!reply) {
+    try {
+      result = await requestReply();
+    } catch {
+      result = { success: false };
     }
+    reply = result.success ? normalizeChatReply(result.data) : null;
+  }
+  if (!reply) {
+    return res.status(502).json({ success: false, error: 'Hunter AI returned an invalid response. Retry the message.', errorType: 'OUTPUT_SCHEMA_VALIDATION_FAILED' });
   }
 
   return res.json({
     success: true,
-    fallback: usedFallback,
+    fallback: false,
+    source: 'ollama-local',
     reply,
-    data: { reply, fallback: usedFallback },
+    data: { reply, fallback: false },
   });
 }
 

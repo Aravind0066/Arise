@@ -2,12 +2,12 @@ import { createRequire } from 'module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Ensure the controllers see GEMINI_API_KEY so they enter the Gemini branch
-process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'test-key-for-unit-tests';
+// Ensure the controllers see OLLAMA_BASE_URL so they exercise the provider path
+process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 
 const require = createRequire(import.meta.url);
 const { generateNutritionRecommendations } = require('../controllers/nutritionController');
-const geminiService = require('../services/geminiService');
+const aiProvider = require('../services/aiProvider');
 
 function mockRes() {
   const res = {};
@@ -18,7 +18,7 @@ function mockRes() {
   return res;
 }
 
-const VALID_GEMINI_REC = [
+const VALID_AI_REC = [
   {
     name: 'Grilled Chicken Bowl',
     ingredients: ['chicken', 'rice', 'broccoli'],
@@ -28,22 +28,29 @@ const VALID_GEMINI_REC = [
   },
 ];
 
-// 1. No input at all → 400
-test('Nutrition: no input fields returns 400', async () => {
+// 1. Empty optional inputs still produce a general plan.
+test('Nutrition: generation proceeds with every optional input empty', async () => {
+  const original = aiProvider.generateResponse;
+  let prompt = '';
+  let format;
+  aiProvider.generateResponse = async (value, options) => { prompt = value; format = options.format; return { success: true, data: VALID_AI_REC }; };
   const req = { body: {} };
   const res = mockRes();
   await generateNutritionRecommendations(req, res);
-  assert.equal(res.statusCode, 400);
-  assert.deepEqual(res.body, {
-    success: false,
-    error: 'At least one nutrition input field must be provided.',
-  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.success, true);
+  assert.match(prompt, /general balanced meal-planning defaults/);
+  assert.match(prompt, /No meal scope was selected/);
+  assert.doesNotMatch(prompt, /Fitness goal:|Dietary preferences:|Maximum preparation time|Budget per meal/);
+  assert.equal(Array.isArray(format), false);
+  assert.equal(format.type, 'array');
+  aiProvider.generateResponse = original;
 });
 
-// 2. Gemini returns valid array → success=true, fallback=false, recommendations present
-test('Nutrition: Gemini valid array → success with live recs', async () => {
-  const original = geminiService.generateResponse;
-  geminiService.generateResponse = async () => ({ success: true, data: VALID_GEMINI_REC });
+// 2. Ollama returns valid array → success=true, fallback=false, recommendations present
+test('Nutrition: Ollama valid array → success with live recs', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({ success: true, data: VALID_AI_REC });
 
   const req = { body: { fitnessGoal: 'Muscle Gain', prepTimeMinutes: 30 } };
   const res = mockRes();
@@ -51,7 +58,8 @@ test('Nutrition: Gemini valid array → success with live recs', async () => {
 
   assert.equal(res.body.success, true);
   assert.equal(res.body.fallback, false);
-  assert.deepEqual(Object.keys(res.body).sort(), ['data', 'fallback', 'recommendations', 'success']);
+  assert.deepEqual(Object.keys(res.body).sort(), ['data', 'fallback', 'recommendations', 'source', 'success']);
+  assert.equal(res.body.source, 'ollama-local');
   assert.ok(Array.isArray(res.body.recommendations));
   assert.ok(res.body.recommendations.length > 0);
   // The current wire contract exposes recommendations at top level and mirrors them in data.
@@ -62,15 +70,15 @@ test('Nutrition: Gemini valid array → success with live recs', async () => {
     protein: '45g',
   });
 
-  geminiService.generateResponse = original;
+  aiProvider.generateResponse = original;
 });
 
-// 3. Gemini returns wrapped object { recommendations: [...] } → normalizer handles it
-test('Nutrition: Gemini wrapped recommendations object → success with live recs', async () => {
-  const original = geminiService.generateResponse;
-  geminiService.generateResponse = async () => ({
+// 3. Ollama returns wrapped object { recommendations: [...] } → normalizer handles it
+test('Nutrition: Ollama wrapped recommendations object → success with live recs', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({
     success: true,
-    data: { recommendations: VALID_GEMINI_REC },
+    data: { recommendations: VALID_AI_REC },
   });
 
   const req = { body: { fitnessGoal: 'Endurance' } };
@@ -81,39 +89,90 @@ test('Nutrition: Gemini wrapped recommendations object → success with live rec
   assert.equal(res.body.fallback, false);
   assert.ok(Array.isArray(res.body.recommendations));
 
-  geminiService.generateResponse = original;
+  aiProvider.generateResponse = original;
 });
 
-// 4. Gemini fails → deterministic fallback, still success=true
-test('Nutrition: Gemini failure → deterministic fallback', async () => {
-  const original = geminiService.generateResponse;
-  geminiService.generateResponse = async () => ({ success: false, error: 'quota exceeded' });
+// 4. Ollama fails → deterministic fallback, still success=true
+test('Nutrition: Ollama failure returns an error without invented meal suggestions', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({ success: false, error: 'quota exceeded' });
 
   const req = { body: { fitnessGoal: 'Weight Loss' } };
   const res = mockRes();
   await generateNutritionRecommendations(req, res);
 
-  assert.equal(res.body.success, true);
-  assert.equal(res.body.fallback, true);
-  assert.ok(Array.isArray(res.body.recommendations));
-  assert.ok(res.body.recommendations.length > 0);
-  assert.equal(typeof res.body.recommendations[0].nutrition.approximateCalories, 'string');
-  assert.equal(typeof res.body.recommendations[0].nutrition.approximateProtein, 'string');
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.success, false);
+  assert.equal(res.body.errorType, 'OLLAMA_PROVIDER_ERROR');
+  assert.equal(res.body.recommendations, undefined);
 
-  geminiService.generateResponse = original;
+  aiProvider.generateResponse = original;
 });
 
-// 5. Gemini returns malformed data → fallback
-test('Nutrition: Gemini malformed data → fallback', async () => {
-  const original = geminiService.generateResponse;
-  geminiService.generateResponse = async () => ({ success: true, data: 'not an array' });
+// 5. Ollama returns malformed data → fallback
+test('Nutrition: Ollama malformed data returns an error', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({ success: true, data: 'not an array' });
 
   const req = { body: { fitnessGoal: 'Maintenance', prepTimeMinutes: 20 } };
   const res = mockRes();
   await generateNutritionRecommendations(req, res);
 
-  assert.equal(res.body.success, true);
-  assert.equal(res.body.fallback, true);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.success, false);
+  assert.equal(res.body.errorType, 'OUTPUT_SCHEMA_VALIDATION_FAILED');
+  assert.match(res.body.error, /name, ingredients, portions or servings, and steps or instructions/);
 
-  geminiService.generateResponse = original;
+  aiProvider.generateResponse = original;
+});
+
+test('Nutrition: normalizes safe field variations and does not require optional nutrition estimates', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({ success: true, data: [{
+    title: 'Lentil bowl',
+    items: [{ name: 'lentils', amount: '1 cup' }, { ingredient: 'spinach' }],
+    servings: 2,
+    instructions: ['Simmer lentils.', 'Fold in spinach.'],
+    prepTimeMinutes: 25,
+  }] });
+  const res = mockRes();
+  await generateNutritionRecommendations({ body: {} }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.recommendations[0].name, 'Lentil bowl');
+  assert.deepEqual(res.body.recommendations[0].ingredients, ['1 cup lentils', 'spinach']);
+  assert.equal(res.body.recommendations[0].portions, '2');
+  assert.equal(res.body.recommendations[0].preparationTimeMinutes, 25);
+  assert.equal(res.body.recommendations[0].nutrition, undefined);
+  aiProvider.generateResponse = original;
+});
+
+test('Nutrition: missing required meal fields fails without inventing values', async () => {
+  const original = aiProvider.generateResponse;
+  aiProvider.generateResponse = async () => ({ success: true, data: [{ name: 'Incomplete bowl', ingredients: ['rice'] }] });
+  const res = mockRes();
+  await generateNutritionRecommendations({ body: {} }, res);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.errorType, 'OUTPUT_SCHEMA_VALIDATION_FAILED');
+  assert.equal(res.body.recommendations, undefined);
+  aiProvider.generateResponse = original;
+});
+
+test('Nutrition: ingredient, time, meal count, and saved context constraints reach the provider prompt', async () => {
+  const original = aiProvider.generateResponse;
+  let prompt = '';
+  aiProvider.generateResponse = async (value) => { prompt = value; return { success: true, data: VALID_AI_REC }; };
+  const req = { body: {
+    availableIngredients: ['lentils', 'spinach'], prepTimeMinutes: 20, mealsToPlan: 'full-day',
+    context: { previousSavedPlans: [{ meals: ['Tofu bowl'] }], foodLogs: { available: false, entries: null } },
+  } };
+  const res = mockRes();
+  await generateNutritionRecommendations(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.match(prompt, /lentils, spinach/);
+  assert.match(prompt, /Maximum preparation time \(minutes\): 20/);
+  assert.match(prompt, /full day plan/);
+  assert.match(prompt, /Tofu bowl/);
+  assert.match(prompt, /Do not infer food intake/);
+  assert.doesNotMatch(prompt, /Fitness goal:|Dietary preferences:|Budget per meal/);
+  aiProvider.generateResponse = original;
 });

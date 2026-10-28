@@ -87,7 +87,7 @@ export default function ProfileScreen() {
         <ScrollView contentContainerStyle={themedStyles.content}>
           <View style={themedStyles.header}>
             <View>
-              <Text style={themedStyles.systemTag}>SYSTEM // HUNTER DOSSIER</Text>
+              <Text style={themedStyles.systemTag}>Hunter Profile</Text>
               <Text style={themedStyles.title}>CHARACTER SHEET</Text>
             </View>
             <Pressable
@@ -169,7 +169,7 @@ export default function ProfileScreen() {
             <View style={themedStyles.settingsCardLeft}>
               <Text style={themedStyles.settingsCardIcon}>🎨</Text>
               <View>
-                <Text style={themedStyles.settingsCardTag}>SYSTEM // APPEARANCE</Text>
+                <Text style={themedStyles.settingsCardTag}>Appearance</Text>
                 <Text style={themedStyles.settingsCardTitle}>THEMES & TYPOGRAPHY</Text>
                 <Text style={themedStyles.settingsCardSub}>Customize HUD colors & text scale</Text>
               </View>
@@ -181,7 +181,7 @@ export default function ProfileScreen() {
             <View style={themedStyles.settingsCardLeft}>
               <Text style={themedStyles.settingsCardIcon}>📜</Text>
               <View>
-                <Text style={themedStyles.settingsCardTag}>SYSTEM // RECORDS</Text>
+                <Text style={themedStyles.settingsCardTag}>Records</Text>
                 <Text style={themedStyles.settingsCardTitle}>LOGS & HISTORY</Text>
                 <Text style={themedStyles.settingsCardSub}>Review completed quests and progression entries</Text>
               </View>

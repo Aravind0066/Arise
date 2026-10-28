@@ -20,9 +20,14 @@ import {
   getHunterProfile,
   getHunterQuests,
   getHunterStats,
+  getSavedWeaknessRecommendations,
   recordStudyCompletion,
+  saveWeaknessRecommendations,
 } from '../lib/hunterStorage';
 import { HunterQuest, StatType, WeaknessRecommendation } from '../lib/hunterTypes';
+import { useInternetConnectivity } from '../lib/ConnectivityContext';
+import { onlineRequestErrorMessage } from '../lib/connectivityRules';
+import { OfflineNotice } from '../components/OfflineNotice';
 
 const CATEGORIES = ['ALL', 'FITNESS', 'STUDY', 'DISCIPLINE', 'HEALTH', 'MINDFULNESS'] as const;
 
@@ -30,6 +35,7 @@ export default function QuestsScreen() {
   const { theme } = useAppearance();
   const themedStyles = useThemedStyles(styles);
   const router = useRouter();
+  const { status: internetStatus, refresh } = useInternetConnectivity();
   const [quests, setQuests] = useState<HunterQuest[]>([]);
   const [selectedCat, setSelectedCat] = useState<string>('ALL');
   const [message, setMessage] = useState('');
@@ -38,8 +44,8 @@ export default function QuestsScreen() {
   // AI input states
   const [goal, setGoal] = useState('');
   const [aiCat, setAiCat] = useState<'Fitness' | 'Study' | 'Discipline' | 'Health' | 'Mindfulness'>('Study');
-  const [aiMinutes, setAiMinutes] = useState('45');
-  const [aiDifficulty, setAiDifficulty] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
+  const [aiMinutes] = useState('45');
+  const [aiDifficulty] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
 
   // Custom Quest Modal
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -60,13 +66,15 @@ export default function QuestsScreen() {
   const [recFallback, setRecFallback] = useState(false);
   const [recHasScanned, setRecHasScanned] = useState(false);
   const [skippedRecs, setSkippedRecs] = useState<string[]>([]);
-  const hasAutoScanned = useRef(false);
+  const recRequestInFlight = useRef(false);
+  const generateRequestInFlight = useRef(false);
 
   const fetchRecommendations = useCallback(async () => {
+    if (recRequestInFlight.current) return;
+    recRequestInFlight.current = true;
     setRecLoading(true);
     setRecError('');
     setRecFallback(false);
-    setRecommendations([]);
     try {
       const profile = await getHunterProfile();
       const stats = await getHunterStats();
@@ -120,27 +128,31 @@ export default function QuestsScreen() {
       setRecommendations(recList);
       setRecFallback(res.fallback === true);
       setRecHasScanned(true);
+      if (res.fallback !== true) {
+        await saveWeaknessRecommendations({ recommendations: recList, skipped: skippedRecs });
+      }
     } catch (err: any) {
-      setRecError(err.message || 'Failed to load recommendations.');
+      const currentStatus = await refresh();
+      setRecError(currentStatus === 'offline' ? '' : onlineRequestErrorMessage(err, currentStatus));
       setRecHasScanned(true);
     } finally {
+      recRequestInFlight.current = false;
       setRecLoading(false);
     }
-  }, [skippedRecs]);
+  }, [skippedRecs, refresh]);
 
   const loadData = useCallback(async () => {
-    const q = await getHunterQuests();
+    const [q, savedRecommendations] = await Promise.all([getHunterQuests(), getSavedWeaknessRecommendations()]);
     setQuests(q);
+    setRecommendations(savedRecommendations.recommendations);
+    setSkippedRecs(savedRecommendations.skipped);
+    setRecHasScanned(savedRecommendations.recommendations.length > 0 || savedRecommendations.skipped.length > 0);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-      if (!hasAutoScanned.current) {
-        hasAutoScanned.current = true;
-        fetchRecommendations();
-      }
-    }, [loadData, fetchRecommendations])
+    }, [loadData])
   );
 
   const handleQuestAction = (quest: HunterQuest) => {
@@ -149,8 +161,9 @@ export default function QuestsScreen() {
     if (quest.category.toUpperCase() === 'FITNESS') {
       // Navigate to dedicated workout preparation & execution flow
       router.push({
-        pathname: '/workout',
+        pathname: '/tools',
         params: {
+          tab: 'workout',
           questId: quest._id,
           workoutTitle: quest.title,
         },
@@ -169,15 +182,16 @@ export default function QuestsScreen() {
 
     try {
       if (selectedQuestForAction.category === 'Study') {
-        const res = await recordStudyCompletion({
+        await recordStudyCompletion({
           topic: selectedQuestForAction.title,
           durationMinutes: 45,
           questId: selectedQuestForAction._id,
           xpReward: selectedQuestForAction.xpReward,
+          verificationNote,
         });
         setMessage(`STUDY DIRECTIVE VERIFIED: +${selectedQuestForAction.xpReward} XP · KNOWLEDGE +4`);
       } else {
-        const res = await completeHunterQuest(selectedQuestForAction._id);
+        const res = await completeHunterQuest(selectedQuestForAction._id, verificationNote);
         setMessage(`DIRECTIVE VERIFIED: +${res.quest.xpReward} XP · ${res.quest.targetStat.toUpperCase()} +${res.quest.statBonus}`);
       }
 
@@ -233,13 +247,16 @@ export default function QuestsScreen() {
         statBonus: 3,
         xpReward: rec.suggestedReward,
         deadline: rec.deadline,
-        generatedBy: 'ai',
+        generatedBy: recFallback ? 'system' : 'ai',
+        fallback: recFallback || undefined,
         status: 'active',
       };
 
       const updated = await addHunterQuests([newQuest]);
       setQuests(updated);
-      setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
+      const remainingRecommendations = recommendations.filter((item) => item.title !== rec.title);
+      setRecommendations(remainingRecommendations);
+      await saveWeaknessRecommendations({ recommendations: remainingRecommendations, skipped: skippedRecs });
       setMessage('WEAKNESS DIRECTIVE INJECTED INTO HUD');
       setTimeout(() => setMessage(''), 4000);
     } catch (err: any) {
@@ -249,15 +266,20 @@ export default function QuestsScreen() {
   };
 
   const handleSkipRec = (rec: WeaknessRecommendation) => {
-    setSkippedRecs((prev) => [...prev, rec.title]);
-    setRecommendations((prev) => prev.filter((r) => r.title !== rec.title));
+    const nextSkipped = [...new Set([...skippedRecs, rec.title])];
+    const remainingRecommendations = recommendations.filter((item) => item.title !== rec.title);
+    setSkippedRecs(nextSkipped);
+    setRecommendations(remainingRecommendations);
+    void saveWeaknessRecommendations({ recommendations: remainingRecommendations, skipped: nextSkipped });
   };
 
   const handleGenerateAi = async () => {
+    if (generateRequestInFlight.current) return;
     if (!goal.trim()) {
       setMessage('Specify an objective or target domain first.');
       return;
     }
+    generateRequestInFlight.current = true;
     setLoadingAi(true);
     setMessage('');
     try {
@@ -271,11 +293,15 @@ export default function QuestsScreen() {
       const updated = await addHunterQuests(result.data);
       setQuests(updated);
       setGoal('');
-      setMessage(`3 SYSTEM DIRECTIVES SPAWNED INTO MATRIX`);
+      setMessage(result.fallback
+        ? '3 LOCAL FALLBACK DIRECTIVES SPAWNED — NOT LIVE HUNTER AI'
+        : '3 LIVE HUNTER AI DIRECTIVES SPAWNED');
       setTimeout(() => setMessage(''), 5000);
     } catch (error: any) {
-      setMessage(error.message || 'Generation failed');
+      const currentStatus = await refresh();
+      setMessage(currentStatus === 'offline' ? '' : onlineRequestErrorMessage(error, currentStatus));
     } finally {
+      generateRequestInFlight.current = false;
       setLoadingAi(false);
     }
   };
@@ -338,7 +364,7 @@ export default function QuestsScreen() {
           {/* Header */}
           <View style={themedStyles.header}>
             <View>
-              <Text style={themedStyles.systemTag}>SYSTEM // QUEST DIRECTIVES</Text>
+              <Text style={themedStyles.systemTag}>Quests</Text>
               <Text style={themedStyles.title}>ACTIVE DIRECTIVES</Text>
             </View>
             <Pressable
@@ -348,6 +374,8 @@ export default function QuestsScreen() {
               <Text style={themedStyles.customBtnText}>+ CUSTOM</Text>
             </Pressable>
           </View>
+
+          <OfflineNotice visible={internetStatus === 'offline'} />
 
           {/* AI Generator Panel (Preserved functionality, clean branding) */}
           <View style={themedStyles.aiPanel}>
@@ -404,7 +432,7 @@ export default function QuestsScreen() {
           <View style={themedStyles.recPanel}>
             <View style={themedStyles.recHeader}>
               <View>
-                <Text style={themedStyles.recTag}>SYSTEM // WEAKNESS ANALYSIS</Text>
+                <Text style={themedStyles.recTag}>Weakness Analysis</Text>
                 <Text style={themedStyles.recTitle}>RECOMMENDED DIRECTIVES</Text>
               </View>
               <Pressable
@@ -420,7 +448,7 @@ export default function QuestsScreen() {
 
             {recFallback && (
               <View style={themedStyles.recFallbackBadge}>
-                <Text style={themedStyles.recFallbackText}>⚠ OFFLINE MODE — EMBEDDED ENGINE ACTIVE</Text>
+                <Text style={themedStyles.recFallbackText}>⚠ SERVER FALLBACK — NOT A LIVE HUNTER AI RECOMMENDATION</Text>
               </View>
             )}
 
@@ -481,10 +509,21 @@ export default function QuestsScreen() {
             {CATEGORIES.map((cat) => (
               <Pressable
                 key={cat}
-                style={[themedStyles.filterChip, selectedCat === cat && themedStyles.filterChipActive]}
+                style={[
+                  themedStyles.filterChip,
+                  {
+                    backgroundColor: selectedCat === cat ? theme.buttonBackground : theme.surface,
+                    borderColor: selectedCat === cat ? theme.buttonBackground : theme.border,
+                  },
+                ]}
                 onPress={() => setSelectedCat(cat)}
               >
-                <Text style={[themedStyles.filterText, selectedCat === cat && themedStyles.filterTextActive]}>
+                <Text
+                  style={[
+                    themedStyles.filterText,
+                    { color: selectedCat === cat ? theme.buttonText : theme.textSecondary },
+                  ]}
+                >
                   {cat}
                 </Text>
               </Pressable>
@@ -495,21 +534,21 @@ export default function QuestsScreen() {
           <View style={themedStyles.list}>
             {filteredQuests.map((quest) => {
               const isCompleted = quest.status === 'completed';
-              const theme = getCategoryTheme(quest.category);
+              const categoryTheme = getCategoryTheme(quest.category);
 
               return (
                 <View
                   key={quest._id}
                   style={[
                     themedStyles.questCard,
-                    { borderLeftColor: theme.color, borderLeftWidth: 4 },
+                    { borderLeftColor: categoryTheme.color, borderLeftWidth: 4 },
                     isCompleted && themedStyles.questCardCompleted,
                   ]}
                 >
                   <View style={themedStyles.questHeader}>
-                    <View style={[themedStyles.catBadge, { backgroundColor: `${theme.color}22`, borderColor: theme.color }]}>
-                      <Text style={[themedStyles.catBadgeText, { color: theme.color }]}>
-                        {theme.icon} {quest.category.toUpperCase()}
+                    <View style={[themedStyles.catBadge, { backgroundColor: `${categoryTheme.color}22`, borderColor: categoryTheme.color }]}>
+                      <Text style={[themedStyles.catBadgeText, { color: categoryTheme.color }]}>
+                        {categoryTheme.icon} {quest.category.toUpperCase()}
                       </Text>
                     </View>
                     <View style={themedStyles.xpBadge}>
@@ -520,6 +559,9 @@ export default function QuestsScreen() {
                   <Text style={[themedStyles.questTitle, isCompleted && themedStyles.questTitleDone]}>
                     {quest.title}
                   </Text>
+                  {quest.fallback ? (
+                    <Text style={[themedStyles.questFallbackText, { color: theme.warning }]}>LOCAL FALLBACK · NOT LIVE HUNTER AI</Text>
+                  ) : null}
                   <Text style={themedStyles.questDesc}>{quest.description}</Text>
 
                   <View style={themedStyles.questFooter}>
@@ -532,12 +574,12 @@ export default function QuestsScreen() {
                         <Text style={themedStyles.completedTagText}>✓ VERIFIED & SEALED</Text>
                       </View>
                     ) : (
-                      <Pressable
-                        style={[themedStyles.actionBtn, { borderColor: theme.color }]}
+                        <Pressable
+                        style={[themedStyles.actionBtn, { borderColor: categoryTheme.color }]}
                         onPress={() => handleQuestAction(quest)}
                       >
-                        <Text style={[themedStyles.actionBtnText, { color: theme.color }]}>
-                          {theme.action}
+                        <Text style={[themedStyles.actionBtnText, { color: categoryTheme.color }]}>
+                          {categoryTheme.action}
                         </Text>
                       </Pressable>
                     )}
@@ -636,7 +678,7 @@ export default function QuestsScreen() {
             <View style={themedStyles.actionModalCard}>
               <View style={themedStyles.actionModalHeader}>
                 <Text style={themedStyles.actionModalTag}>
-                  SYSTEM // {selectedQuestForAction?.category.toUpperCase()} PROTOCOL
+                  {selectedQuestForAction?.category.toUpperCase()} PROTOCOL
                 </Text>
                 <Text style={themedStyles.actionModalTitle}>{selectedQuestForAction?.title}</Text>
                 <Text style={themedStyles.actionModalDesc}>{selectedQuestForAction?.description}</Text>
@@ -651,6 +693,7 @@ export default function QuestsScreen() {
                     ? 'Record your core reflection or state of mindfulness:'
                     : 'Confirm completion of this discipline protocol:'}
                 </Text>
+                <Text style={themedStyles.actionCriteriaText}>Enter at least 8 characters describing what you completed.</Text>
                 <TextInput
                   value={verificationNote}
                   onChangeText={setVerificationNote}
@@ -921,6 +964,12 @@ const styles = StyleSheet.create({
   questTitleDone: {
     textDecorationLine: 'line-through',
     color: '#557591',
+  },
+  questFallbackText: {
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+    marginBottom: 5,
   },
   questDesc: {
     color: '#7b9cb8',

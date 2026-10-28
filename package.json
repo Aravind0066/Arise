@@ -11,12 +11,13 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node --experimental-strip-types --test test/hunter-engine.test.mjs test/account-deletion.test.mjs test/api-wrapper.test.mjs test/workout-plan.test.mjs && npm run test:backend",
+    "test": "node --experimental-strip-types --test test/hunter-engine.test.mjs test/account-deletion.test.mjs test/api-wrapper.test.mjs test/workout-plan.test.mjs test/progression-integrity.test.mjs test/connectivity.test.mjs test/goal-progress.test.mjs test/history-restoration.test.mjs test/workout-history.test.mjs test/workout-generation-context.test.mjs test/nutrition-generation.test.mjs test/chat-response.test.mjs && npm run test:backend",
     "test:backend": "cd backend && npm test"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-community/netinfo": "11.4.1",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",

@@ -1,14 +1,13 @@
-const mongoose = require("mongoose");
-const Quest = require("../models/Quest");
-const Recommendation = require("../models/Recommendation");
+const { withStatus } = require("../utils/questStatus");
+const aiProvider = require("../services/aiProvider");
+const { generatedQuestsSchema, extractJsonArray } = require("../utils/outputSchemas");
 
 const MAX_RECOMMENDATIONS = 3;
 const MAX_XP = 1000;
 
 const parseModelJson = (text) => {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  const parsed = JSON.parse(cleaned);
-  return Array.isArray(parsed) ? parsed : parsed.recommendations;
+  return extractJsonArray(JSON.parse(cleaned), ['quests', 'recommendations', 'items', 'tasks', 'data']);
 };
 
 // Built-in HunterOS Solo Leveling Quest Generator for offline / fallback execution
@@ -121,92 +120,89 @@ const generateRecommendations = async (req, res) => {
   }
 
   let recommendations = null;
+  let usedFallback = false;
+  let fallbackReason;
 
-  if (process.env.GEMINI_API_KEY) {
-    try {
+  try {
       const prompt = [
-        "You are the HunterOS System — a Solo Leveling style HUD AI that issues RPG quests.",
+        "You are HunterOS's friendly RPG-themed directive generator.",
         `Create exactly 3 quests for the goal: ${goal}`,
         `Category: ${category}. Difficulty: ${difficulty}. Available time: ${minutes} minutes.`,
         "Use epic System terminology (e.g., IRON PROTOCOL, SHADOW RECON, SYNAPSE ENCRYPTION).",
-        "Return only a JSON array. Each item must have title, description, xpReward (1-1000), and durationMinutes (5-240).",
+        "Return only a JSON object { \"quests\": [ ... ] } matching the supplied structured-output schema, with exactly 3 objects. Each object needs title, description, xpReward, and durationMinutes. No markdown or commentary.",
       ].join("\n");
 
-      const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
-          }),
+    const result = await aiProvider.generateResponse(prompt, { responseMode: 'json', format: generatedQuestsSchema, feature: 'quest-generate' });
+      if (result.success) {
+        recommendations = extractJsonArray(result.data, ['quests', 'recommendations', 'items', 'tasks', 'data']);
+        if (!recommendations && typeof result.data === "string") {
+          try { recommendations = extractJsonArray(parseModelJson(result.data), ['quests', 'recommendations', 'items', 'tasks', 'data']); } catch { recommendations = null; }
         }
-      );
-
-      if (response.ok) {
-        const payload = await response.json();
-        const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
-        recommendations = parseModelJson(text || "");
-      } else {
-        console.warn("Gemini API call non-200. Falling back to HunterOS System Generator.");
-      }
-    } catch (err) {
-      console.warn("Gemini call error. Falling back to HunterOS System Generator:", err.message);
+    } else {
+      fallbackReason = result.errorType || 'OLLAMA_PROVIDER_ERROR';
     }
+  } catch {
+    fallbackReason = 'OLLAMA_PROVIDER_ERROR';
   }
 
-  if (!Array.isArray(recommendations) || recommendations.length === 0) {
+  const asInteger = (value) => {
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : NaN;
+    return Number.isInteger(numeric) ? numeric : NaN;
+  };
+  if (Array.isArray(recommendations)) {
+    recommendations = recommendations.map((item) => item && typeof item === 'object' ? {
+      ...item,
+      durationMinutes: item.durationMinutes ?? item.estimatedDuration ?? item.duration_minutes ?? item.duration ?? item.minutes,
+      xpReward: item.xpReward ?? item.suggestedReward ?? item.xp_reward ?? item.xp,
+    } : item);
+  }
+  const normalizedQuests = Array.isArray(recommendations) ? recommendations.map((item) => {
+    if (!item || typeof item.title !== 'string' || !item.title.trim() || typeof item.description !== 'string' || !item.description.trim()) return null;
+    const durationMinutes = asInteger(item.durationMinutes);
+    const xpReward = asInteger(item.xpReward);
+    if (durationMinutes < 5 || durationMinutes > 240 || xpReward < 1 || xpReward > MAX_XP) return null;
+    return { ...item, durationMinutes, xpReward, title: item.title.trim(), description: item.description.trim() };
+  }).filter(Boolean) : [];
+  const validQuests = normalizedQuests.length >= MAX_RECOMMENDATIONS;
+  if (!validQuests) {
+    usedFallback = true;
+    fallbackReason ||= 'OUTPUT_SCHEMA_VALIDATION_FAILED';
+    if (process.env.NODE_ENV !== 'production') {
+      const shape = Array.isArray(recommendations)
+        ? { type: 'array', length: recommendations.length, firstItemKeys: recommendations[0] && typeof recommendations[0] === 'object' ? Object.keys(recommendations[0]).slice(0, 16) : [] }
+        : { type: recommendations === null ? 'null' : typeof recommendations, keys: recommendations && typeof recommendations === 'object' ? Object.keys(recommendations).slice(0, 16) : [] };
+      console.warn(`[HunterOS validation] feature=quest-generate result=fallback reason=${fallbackReason} shape=${JSON.stringify(shape)}`);
+    }
     recommendations = generateFallbackQuests(goal, category, minutes, difficulty);
+  } else {
+    recommendations = normalizedQuests.slice(0, MAX_RECOMMENDATIONS);
   }
 
   try {
     const now = Date.now();
-    const isDbConnected = mongoose.connection.readyState === 1;
 
     const quests = recommendations.slice(0, MAX_RECOMMENDATIONS).map((item, index) => {
       const duration = Number(item.durationMinutes) || 30;
       const xpReward = Math.min(MAX_XP, Math.max(10, Number(item.xpReward) || 50));
       return {
-        _id: isDbConnected ? undefined : `ai_${now}_${index + 1}`,
+        _id: `quest_ai_${now}_${index + 1}`,
         title: String(item.title).trim(),
         description: String(item.description).trim(),
         category: String(category).trim(),
         xpReward: Math.round(xpReward),
         deadline: new Date(now + duration * 60 * 1000),
-        generatedBy: "ai",
+        generatedBy: usedFallback ? "system" : "ai",
+        fallback: usedFallback,
       };
     });
 
-    if (isDbConnected) {
-      const savedQuests = await Quest.create(quests);
-      const recommendation = await Recommendation.create({
-        goal,
-        category,
-        availableMinutes: minutes,
-        difficulty,
-        questIds: savedQuests.map((quest) => quest._id),
-      });
-
-      return res.status(201).json({
-        success: true,
-        source: process.env.GEMINI_API_KEY ? "gemini-cloud" : "hunteros-engine",
-        recommendationId: recommendation._id,
-        data: savedQuests,
-      });
-    }
-
-    // Local-first / In-memory Gateway mode (Cloud ready, no external DB needed)
     return res.status(200).json({
       success: true,
-      source: process.env.GEMINI_API_KEY ? "gemini-cloud" : "hunteros-engine",
+      source: usedFallback ? "hunteros-engine" : "ollama-local",
+      fallback: usedFallback,
+      ...(usedFallback ? { fallbackReason } : {}),
       mode: "local-first-gateway",
-      data: quests.map((q, i) => ({
-        ...q,
-        _id: q._id || `quest_ai_${now}_${i + 1}`,
-        status: "active",
-      })),
+      data: quests.map((quest) => withStatus(quest)),
     });
   } catch (error) {
     console.error("Recommendation generation failed:", error);

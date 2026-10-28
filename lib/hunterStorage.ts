@@ -11,7 +11,17 @@ import type {
   StatType,
   WorkoutRoutine,
   WorkoutLog,
+  NutritionHistoryRecord,
+  HunterChatConversation,
+  WeaknessRecommendation,
+  WorkoutPreferences,
 } from './hunterTypes';
+import { getQuestStatusAt, hasMeaningfulVerification } from './questRules';
+import { createRewardClaimer } from './rewardClaims';
+import { createGoalProgress, createGoalProgressStore, type GoalProgress } from './goalProgress';
+import { upsertWorkoutPlanHistory } from './workoutPlanHistory';
+import { createWorkoutPreferencesStore } from './workoutGenerationContext';
+import { createNutritionHistoryStore, createNutritionPreferencesStore, type NutritionPreferences } from './nutritionGeneration';
 
 export const INITIAL_ACHIEVEMENTS: Achievement[] = [
   { id: 'awakening', title: 'The Awakening', description: 'Complete the Hunter baseline assessment', category: 'System', icon: '⚡', unlocked: false },
@@ -87,7 +97,7 @@ export const INITIAL_QUESTS: HunterQuest[] = [
   },
   {
     _id: 'default_journal',
-    title: 'MIND MATRIX // 3-PROMPT JOURNAL PROTOCOL',
+    title: '3-Prompt Journal',
     description: 'Reflect on wins, friction points, and tomorrow’s mission in the Journal module.',
     category: 'Mindfulness',
     targetStat: 'mindfulness',
@@ -108,21 +118,65 @@ const WORKOUT_KEY = 'hunteros.workout.v2';
 const ACHIEVEMENTS_KEY = 'hunteros.achievements.v2';
 const SCREENTIME_KEY = 'hunteros.screentime.v2';
 const DAILY_WORKOUT_PLAN_KEY = 'hunteros.dailyWorkoutPlan.v1';
+const WORKOUT_PLANS_KEY = 'hunteros.workoutPlans.v1';
+const NUTRITION_HISTORY_KEY = 'hunteros.nutritionHistory.v1';
+const NUTRITION_PREFERENCES_KEY = 'hunteros.nutritionPreferences.v1';
+const CHAT_CONVERSATIONS_KEY = 'hunteros.chat.conversations.v1';
+const ACTIVE_CHAT_KEY = 'hunteros.chat.active.v1';
+const QUEST_RECOMMENDATIONS_KEY = 'hunteros.questRecommendations.v1';
+const REWARD_CLAIMS_KEY = 'hunteros.rewardClaims.v1';
 const ONBOARDING_DRAFT_KEY = 'hunteros.onboardingDraft.v1';
+export const GOAL_PROGRESS_KEY = 'hunteros.goalProgress.v1';
+
+const goalProgressStore = createGoalProgressStore(AsyncStorage, GOAL_PROGRESS_KEY);
+
+export async function getGoalProgress(profileGoal: string): Promise<GoalProgress> {
+  try {
+    return await goalProgressStore.load(profileGoal);
+  } catch (error) {
+    console.warn('Failed to load goal progress:', error);
+    return createGoalProgress(profileGoal);
+  }
+}
+
+export function saveGoalProgress(goal: GoalProgress): Promise<void> {
+  return goalProgressStore.save(goal);
+}
+
+const claimRewardOnce = createRewardClaimer(AsyncStorage, REWARD_CLAIMS_KEY);
 
 export interface SavedDailyWorkoutPlan {
   localDate: string;
+  createdAt?: string;
   restDay: string;
   isRestDay: boolean;
   routine: WorkoutRoutine | null;
-  source: 'ai' | 'fallback' | 'rest';
+  source: 'ai' | 'ollama' | 'fallback' | 'rest';
   message?: string;
+  completedAt?: string;
+  mode?: WorkoutPreferences['mode'];
+  equipment?: string[];
+  contextSnapshot?: Record<string, unknown>;
+  completedExerciseIds?: string[];
+}
+
+const WORKOUT_PREFERENCES_KEY = 'hunteros.workoutPreferences.v1';
+const workoutPreferencesStore = createWorkoutPreferencesStore(AsyncStorage, WORKOUT_PREFERENCES_KEY);
+export async function getWorkoutPreferences(): Promise<WorkoutPreferences> {
+  return workoutPreferencesStore.load();
+}
+export async function saveWorkoutPreferences(value: WorkoutPreferences): Promise<void> {
+  await workoutPreferencesStore.save(value);
 }
 
 export async function getSavedDailyWorkoutPlan(): Promise<SavedDailyWorkoutPlan | null> {
   try {
     const raw = await AsyncStorage.getItem(DAILY_WORKOUT_PLAN_KEY);
-    return raw ? JSON.parse(raw) as SavedDailyWorkoutPlan : null;
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    if (!value || typeof value.localDate !== 'string' || typeof value.restDay !== 'string' || !['ai', 'ollama', 'fallback', 'rest'].includes(value.source)) return null;
+    if (!value.isRestDay && (!value.routine || !Array.isArray(value.routine.exercises))) return null;
+    return value as SavedDailyWorkoutPlan;
   } catch (err) {
     console.warn('Failed to load daily workout plan:', err);
     return null;
@@ -130,7 +184,111 @@ export async function getSavedDailyWorkoutPlan(): Promise<SavedDailyWorkoutPlan 
 }
 
 export async function saveDailyWorkoutPlan(plan: SavedDailyWorkoutPlan): Promise<void> {
-  await AsyncStorage.setItem(DAILY_WORKOUT_PLAN_KEY, JSON.stringify(plan));
+  const persistedPlan = { ...plan, createdAt: plan.createdAt || new Date().toISOString() };
+  await AsyncStorage.setItem(DAILY_WORKOUT_PLAN_KEY, JSON.stringify(persistedPlan));
+  if (persistedPlan.routine) {
+    const history = await getWorkoutPlanHistory();
+    await AsyncStorage.setItem(WORKOUT_PLANS_KEY, JSON.stringify(upsertWorkoutPlanHistory(history, persistedPlan)));
+  }
+}
+
+export async function getWorkoutPlanHistory(): Promise<Array<{ id: string; createdAt: string; plan: SavedDailyWorkoutPlan }>> {
+  try {
+    const raw = await AsyncStorage.getItem(WORKOUT_PLANS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const history: Array<{ id: string; createdAt: string; plan: SavedDailyWorkoutPlan }> = Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry.id === 'string' && entry.plan && typeof entry.plan.localDate === 'string') : [];
+    const current = await getSavedDailyWorkoutPlan();
+    if (current?.routine) {
+      const migrated = upsertWorkoutPlanHistory(history, current);
+      if (migrated !== history) {
+        await AsyncStorage.setItem(WORKOUT_PLANS_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    return history;
+  }
+  catch (error) { console.warn('Failed to load workout plan history:', error); return []; }
+}
+
+export async function getNutritionHistory(): Promise<NutritionHistoryRecord[]> {
+  return nutritionHistoryStore.load();
+}
+
+export async function saveNutritionHistoryRecord(record: Omit<NutritionHistoryRecord, 'id' | 'createdAt'> & Partial<Pick<NutritionHistoryRecord, 'id' | 'createdAt'>>): Promise<NutritionHistoryRecord> {
+  return nutritionHistoryStore.append(record);
+}
+
+const nutritionPreferencesStore = createNutritionPreferencesStore(AsyncStorage, NUTRITION_PREFERENCES_KEY);
+const nutritionHistoryStore = createNutritionHistoryStore(AsyncStorage, NUTRITION_HISTORY_KEY);
+export function getNutritionPreferences(): Promise<NutritionPreferences> { return nutritionPreferencesStore.load(); }
+export function saveNutritionPreferences(value: NutritionPreferences): Promise<void> { return nutritionPreferencesStore.save(value); }
+
+export async function getChatConversations(): Promise<HunterChatConversation[]> {
+  try {
+    const raw = await AsyncStorage.getItem(CHAT_CONVERSATIONS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((conversation) => conversation && typeof conversation.id === 'string' && Array.isArray(conversation.messages)).map((conversation) => ({
+      ...conversation,
+      title: typeof conversation.title === 'string' ? conversation.title : 'New chat',
+      createdAt: typeof conversation.createdAt === 'string' ? conversation.createdAt : new Date().toISOString(),
+      updatedAt: typeof conversation.updatedAt === 'string' ? conversation.updatedAt : new Date().toISOString(),
+      messages: conversation.messages.filter((message: unknown) => {
+        const item = message as Record<string, unknown>;
+        return item && typeof item.id === 'string' && ['user', 'assistant', 'error'].includes(String(item.role)) && typeof item.content === 'string';
+      }),
+    })) : [];
+  }
+  catch (error) { console.warn('Failed to load chat conversations:', error); return []; }
+}
+
+export async function getActiveChatId(): Promise<string | null> { return AsyncStorage.getItem(ACTIVE_CHAT_KEY); }
+export async function setActiveChatId(id: string | null): Promise<void> {
+  if (id) await AsyncStorage.setItem(ACTIVE_CHAT_KEY, id); else await AsyncStorage.removeItem(ACTIVE_CHAT_KEY);
+}
+
+export async function saveChatConversation(conversation: HunterChatConversation): Promise<void> {
+  const conversations = await getChatConversations();
+  const index = conversations.findIndex((item) => item.id === conversation.id);
+  if (index < 0) conversations.unshift(conversation); else conversations[index] = conversation;
+  conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  await AsyncStorage.setItem(CHAT_CONVERSATIONS_KEY, JSON.stringify(conversations));
+}
+
+export async function appendChatMessage(conversationId: string, message: HunterChatConversation['messages'][number]): Promise<void> {
+  const conversations = await getChatConversations();
+  const index = conversations.findIndex((item) => item.id === conversationId);
+  if (index < 0) return;
+  const conversation = conversations[index];
+  if (conversation.messages.some((item) => item.id === message.id)) return;
+  const messages = [...conversation.messages, message];
+  const title = conversation.title === 'New chat' && message.role === 'user'
+    ? message.content.trim().slice(0, 52) || 'New chat'
+    : conversation.title;
+  conversations[index] = { ...conversation, title, messages, updatedAt: message.createdAt };
+  conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  await AsyncStorage.setItem(CHAT_CONVERSATIONS_KEY, JSON.stringify(conversations));
+}
+
+export async function deleteChatConversation(id: string): Promise<HunterChatConversation[]> {
+  const conversations = (await getChatConversations()).filter((item) => item.id !== id);
+  await AsyncStorage.setItem(CHAT_CONVERSATIONS_KEY, JSON.stringify(conversations));
+  if (await getActiveChatId() === id) await setActiveChatId(conversations[0]?.id || null);
+  return conversations;
+}
+
+export async function getSavedWeaknessRecommendations(): Promise<{ recommendations: WeaknessRecommendation[]; skipped: string[] }> {
+  try {
+    const raw = await AsyncStorage.getItem(QUEST_RECOMMENDATIONS_KEY);
+    const saved = raw ? JSON.parse(raw) : {};
+    return {
+      recommendations: Array.isArray(saved.recommendations) ? saved.recommendations : [],
+      skipped: Array.isArray(saved.skipped) ? saved.skipped.filter((title: unknown) => typeof title === 'string') : [],
+    };
+  } catch (error) { console.warn('Failed to load saved recommendations:', error); return { recommendations: [], skipped: [] }; }
+}
+
+export async function saveWeaknessRecommendations(value: { recommendations: WeaknessRecommendation[]; skipped: string[] }): Promise<void> {
+  await AsyncStorage.setItem(QUEST_RECOMMENDATIONS_KEY, JSON.stringify(value));
 }
 
 export const XP_PER_LEVEL = 500;
@@ -306,7 +464,12 @@ export async function getHunterQuests(): Promise<HunterQuest[]> {
   try {
     const raw = await AsyncStorage.getItem(QUESTS_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const quests: HunterQuest[] = JSON.parse(raw);
+      const normalized = quests.map((quest) => ({ ...quest, status: getQuestStatusAt(quest) }));
+      if (normalized.some((quest, index) => quest.status !== quests[index].status)) {
+        await saveHunterQuests(normalized);
+      }
+      return normalized;
     }
   } catch (err) {
     console.warn('Failed to parse quests:', err);
@@ -357,7 +520,7 @@ export async function saveHunterHistory(history: CompletedLog[]): Promise<void> 
 /**
  * Completes a quest directive exactly once, preventing duplicate rewards.
  */
-export async function completeHunterQuest(questId: string): Promise<{
+export async function completeHunterQuest(questId: string, verificationNote: string): Promise<{
   profile: HunterProfile;
   stats: HunterStats;
   quest: HunterQuest;
@@ -371,6 +534,18 @@ export async function completeHunterQuest(questId: string): Promise<{
 
   const quest = quests[targetIndex];
   if (quest.status === 'completed') {
+    throw new Error('Quest directive has already been completed.');
+  }
+  if (getQuestStatusAt(quest) === 'expired') {
+    quest.status = 'expired';
+    quests[targetIndex] = quest;
+    await saveHunterQuests(quests);
+    throw new Error('This quest has expired and cannot be completed.');
+  }
+  if (!hasMeaningfulVerification(verificationNote)) {
+    throw new Error('Add a meaningful verification note (at least 8 characters).');
+  }
+  if (!(await claimRewardOnce(`quest:${questId}`))) {
     throw new Error('Quest directive has already been completed.');
   }
 
@@ -405,6 +580,7 @@ export async function completeHunterQuest(questId: string): Promise<{
     xpEarned: quest.xpReward,
     statRaised: targetStat,
     statBonus: bonus,
+    verificationNote: verificationNote.trim(),
     completedAt: quest.completedAt,
   };
   history.unshift(historyItem);
@@ -420,7 +596,7 @@ export async function completeHunterQuest(questId: string): Promise<{
  */
 export async function recordWorkoutCompletion(data: {
   workoutName: string;
-  routineId?: string;
+  routineId: string;
   questId?: string;
   exercisesCompleted: number;
   totalExercises: number;
@@ -435,6 +611,12 @@ export async function recordWorkoutCompletion(data: {
   quest?: HunterQuest;
   unlockedAchievement?: Achievement;
 }> {
+  if ((await getWorkoutLogs()).some((log) => log.routineId === data.routineId)) {
+    throw new Error('This workout has already been completed.');
+  }
+  if (!(await claimRewardOnce(`workout:${data.routineId}`))) {
+    throw new Error('This workout has already been completed.');
+  }
   // 1. Save Workout Log
   const logs = await getWorkoutLogs();
   const newWorkout: WorkoutLog = {
@@ -445,10 +627,16 @@ export async function recordWorkoutCompletion(data: {
     totalExercises: data.totalExercises,
     durationSeconds: data.durationSeconds,
     difficulty: data.difficulty,
+    xpEarned: data.xpReward,
     createdAt: new Date().toISOString(),
   };
   logs.unshift(newWorkout);
   await AsyncStorage.setItem(WORKOUT_KEY, JSON.stringify(logs));
+
+  const dailyPlan = await getSavedDailyWorkoutPlan();
+  if (dailyPlan?.routine?.id === data.routineId && !dailyPlan.completedAt) {
+    await saveDailyWorkoutPlan({ ...dailyPlan, completedAt: newWorkout.createdAt });
+  }
 
   // 2. Update Stats (Strength + bonus, Health + 2)
   const stats = await getHunterStats();
@@ -512,6 +700,8 @@ export async function recordStudyCompletion(data: {
   topic: string;
   durationMinutes: number;
   questId?: string;
+  completionId?: string;
+  verificationNote?: string;
   xpReward?: number;
 }): Promise<{
   profile: HunterProfile;
@@ -519,6 +709,20 @@ export async function recordStudyCompletion(data: {
   quest?: HunterQuest;
   unlockedAchievement?: Achievement;
 }> {
+  if (data.questId) {
+    const quest = (await getHunterQuests()).find((item) => item._id === data.questId);
+    if (!quest || getQuestStatusAt(quest) === 'expired') {
+      throw new Error('This quest has expired and cannot be completed.');
+    }
+    if (!hasMeaningfulVerification(data.verificationNote || '')) {
+      throw new Error('Add a meaningful verification note (at least 8 characters).');
+    }
+    if (quest.status === 'completed' || !(await claimRewardOnce(`quest:${data.questId}`))) {
+      throw new Error('Quest directive has already been completed.');
+    }
+  } else if (!data.completionId || !(await claimRewardOnce(`study:${data.completionId}`))) {
+    throw new Error('This study session has already been rewarded or is missing its session id.');
+  }
   const earnedXp = data.xpReward || (data.durationMinutes >= 50 ? 80 : 50);
 
   // 1. Update stats (Knowledge + 4, Discipline + 2)
@@ -558,6 +762,7 @@ export async function recordStudyCompletion(data: {
     xpEarned: earnedXp,
     statRaised: 'knowledge',
     statBonus: 4,
+    verificationNote: data.verificationNote?.trim(),
     completedAt: new Date().toISOString(),
   };
   history.unshift(historyItem);
@@ -640,10 +845,14 @@ export async function saveWorkoutLog(log: Omit<WorkoutLog, '_id' | 'createdAt'>)
   profile: HunterProfile;
   stats: HunterStats;
 }> {
+  if (log.routineId && !(await claimRewardOnce(`custom-workout:${log.routineId}`))) {
+    throw new Error('This custom workout log has already been saved.');
+  }
   const logs = await getWorkoutLogs();
   const newLog: WorkoutLog = {
     ...log,
     _id: `wkt_${Date.now()}`,
+    xpEarned: 50,
     createdAt: new Date().toISOString(),
   };
   logs.unshift(newLog);
@@ -714,7 +923,7 @@ export async function saveJournalEntry(entry: Omit<JournalEntry, '_id' | 'create
   const history = await getHunterHistory();
   history.unshift({
     _id: `log_jrn_${Date.now()}`,
-    title: 'MIND MATRIX // DAILY INTROSPECTION',
+    title: 'Daily Introspection',
     category: 'Mindfulness',
     xpEarned: 35,
     statRaised: 'mindfulness',
@@ -794,7 +1003,15 @@ export async function resetAllData(): Promise<void> {
     ACHIEVEMENTS_KEY,
     SCREENTIME_KEY,
     DAILY_WORKOUT_PLAN_KEY,
+    WORKOUT_PLANS_KEY,
+    NUTRITION_HISTORY_KEY,
+    NUTRITION_PREFERENCES_KEY,
+    CHAT_CONVERSATIONS_KEY,
+    ACTIVE_CHAT_KEY,
+    QUEST_RECOMMENDATIONS_KEY,
+    REWARD_CLAIMS_KEY,
     CURRENT_USER_KEY,
     ONBOARDING_DRAFT_KEY,
+    GOAL_PROGRESS_KEY,
   ]);
 }

@@ -1,10 +1,11 @@
-const geminiService = require('../services/geminiService');
+const aiProvider = require('../services/aiProvider');
+const { workoutSchema } = require('../utils/outputSchemas');
 
 function getWorkoutGenerationTimeoutMs() {
-  const configured = Number(process.env.GEMINI_WORKOUT_TIMEOUT_MS);
-  return Number.isInteger(configured) && configured >= 15000 && configured <= 120000
+  const configured = Number(process.env.OLLAMA_GENERATION_TIMEOUT_MS);
+  return Number.isInteger(configured) && configured >= 15000 && configured <= 180000
     ? configured
-    : 45000;
+    : 180000;
 }
 
 /**
@@ -12,7 +13,7 @@ function getWorkoutGenerationTimeoutMs() {
  * Expected body: { prompt: string }
  */
 async function generate(req, res) {
-  const { prompt } = req.body || {};
+  const { prompt, responseFormat } = req.body || {};
   // Input validation
   if (typeof prompt !== 'string' || prompt.trim().length === 0) {
     return res.status(400).json({ success: false, error: 'Prompt is required and must be a non‑empty string.' });
@@ -29,19 +30,33 @@ async function generate(req, res) {
   };
   res.on?.('close', abortIfClientDisconnected);
   try {
-    const result = await geminiService.generateResponse(prompt, {
-      timeout: getWorkoutGenerationTimeoutMs(),
-      signal: controller.signal,
-    });
+    let result;
+    try {
+      result = await aiProvider.generateResponse(prompt, {
+        timeout: getWorkoutGenerationTimeoutMs(),
+        signal: controller.signal,
+        responseMode: responseFormat === 'workout' ? 'json' : undefined,
+        format: responseFormat === 'workout' ? workoutSchema : undefined,
+        feature: responseFormat === 'workout' ? 'workout' : 'generation',
+      });
+    } catch {
+      if (controller.signal.aborted) return;
+      return res.status(502).json({ success: false, error: 'Ollama inference failed unexpectedly. Check provider availability and retry.', errorType: 'OLLAMA_PROVIDER_ERROR' });
+    }
     if (controller.signal.aborted) return;
     if (result.success) {
-      return res.json({ success: true, data: result.data });
+      return res.json({ success: true, data: result.data, provider: result.provider, model: result.model });
     }
     // Service reported an error (e.g., missing key, timeout, rate limit)
-    return res.status(502).json({ success: false, error: result.error });
+    const errorType = result.errorType || 'OLLAMA_PROVIDER_ERROR';
+    return res.status(aiProvider.responseStatusFor(errorType)).json({
+      success: false,
+      error: result.error,
+      errorType,
+    });
   } catch (err) {
     // Unexpected error – do not leak stack trace
-    return res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+    return res.status(502).json({ success: false, error: 'Ollama inference failed unexpectedly.', errorType: 'OLLAMA_PROVIDER_ERROR' });
   } finally {
     res.off?.('close', abortIfClientDisconnected);
   }

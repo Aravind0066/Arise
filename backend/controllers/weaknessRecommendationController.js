@@ -1,4 +1,5 @@
-const geminiService = require('../services/geminiService');
+const aiProvider = require('../services/aiProvider');
+const { weaknessRecommendationsSchema, extractJsonArray } = require('../utils/outputSchemas');
 
 /**
  * POST /generate (weakness-based recommendations)
@@ -36,15 +37,17 @@ async function generateWeaknessRecommendations(req, res) {
   const safeAvailableMinutes = typeof availableMinutes === 'number' ? availableMinutes : 45;
   const safePreferredCategories = Array.isArray(preferredCategories) && preferredCategories.length > 0 ? preferredCategories : ['Fitness', 'Study', 'Discipline'];
 
-  // Build a concise prompt for Gemini
+  // Build a concise prompt for the configured AI provider
   const prompt = [
     'You are the HunterOS quest generation AI. Based on the supplied user profile, suggest 3‑5 actionable quests.',
     `Goals: ${safeGoals.join(', ')}`,
     `Stats: ${Object.entries(safeStats).map(([k, v]) => `${k}=${v}`).join(', ')}`,
     `Recent quests (status): ${safeRecentQuests.map(q => `${q._id}:${q.status}`).join(', ')}`,
     `Available time (minutes): ${safeAvailableMinutes}`,
+    `Current UTC time for future deadline fields: ${new Date().toISOString()}`,
     `Preferred categories: ${safePreferredCategories.join(', ')}`,
-    'Return a JSON array. Each item must contain:',
+    'Return only a JSON object { "recommendations": [ ... ] } matching the supplied structured-output schema. Create 3 to 5 distinct items and do not add markdown or commentary.',
+    'Every item must contain:',
     '- title (string)',
     '- description (string)',
     '- category (string)',
@@ -56,21 +59,17 @@ async function generateWeaknessRecommendations(req, res) {
 
   let recommendations = null;
   let usedFallback = false;
-  if (process.env.GEMINI_API_KEY) {
-    const result = await geminiService.generateResponse(prompt);
+  let fallbackReason;
+  let result;
+  try {
+    result = await aiProvider.generateResponse(prompt, { responseMode: 'json', format: weaknessRecommendationsSchema, feature: 'weakness-scan' });
     if (result.success) {
-      const raw = result.data;
-      if (Array.isArray(raw)) {
-        recommendations = raw;
-      } else if (raw && typeof raw === 'object') {
-        recommendations = Array.isArray(raw.recommendations)
-          ? raw.recommendations
-          : (Array.isArray(raw.quests) ? raw.quests : (Array.isArray(raw.data) ? raw.data : null));
-      }
+      recommendations = extractJsonArray(result.data);
     } else {
-      // Gemini call failed – will fall back below
-      console.warn('Gemini recommendation error:', result.error);
+      fallbackReason = result.errorType || 'OLLAMA_PROVIDER_ERROR';
     }
+  } catch {
+    fallbackReason = 'OLLAMA_PROVIDER_ERROR';
   }
 
   // Normalizer / validation helper for a single recommendation object
@@ -78,23 +77,24 @@ async function generateWeaknessRecommendations(req, res) {
     if (!rec || typeof rec !== 'object') return null;
     const title = typeof rec.title === 'string' && rec.title.trim().length > 0 ? rec.title.trim() : null;
     const description = typeof rec.description === 'string' && rec.description.trim().length > 0 ? rec.description.trim() : null;
-    const category = typeof rec.category === 'string' && rec.category.trim().length > 0 ? rec.category.trim() : 'General';
-    if (!title || !description) return null;
+    const categoryValue = rec.category ?? rec.categoryName ?? rec.category_name;
+    const category = typeof categoryValue === 'string' && categoryValue.trim().length > 0 ? categoryValue.trim() : null;
+    if (!title || !description || !category) return null;
 
-    const duration = typeof rec.estimatedDuration === 'number'
-      ? rec.estimatedDuration
-      : parseInt(String(rec.estimatedDuration || '').replace(/\D/g, ''), 10) || 30;
-    const reward = typeof rec.suggestedReward === 'number'
-      ? rec.suggestedReward
-      : parseInt(String(rec.suggestedReward || '').replace(/\D/g, ''), 10) || 50;
+    const rawDuration = rec.estimatedDuration ?? rec.durationMinutes ?? rec.duration_minutes;
+    const rawReward = rec.suggestedReward ?? rec.xpReward ?? rec.xp_reward;
+    const duration = typeof rawDuration === 'number' ? rawDuration : typeof rawDuration === 'string' && /^\d+$/.test(rawDuration.trim()) ? Number(rawDuration) : NaN;
+    const reward = typeof rawReward === 'number' ? rawReward : typeof rawReward === 'string' && /^\d+$/.test(rawReward.trim()) ? Number(rawReward) : NaN;
+    if (!Number.isInteger(duration) || duration < 5 || duration > 240 || !Number.isInteger(reward) || reward < 1 || reward > 1000) return null;
 
     let diff = 'Intermediate';
     const rawDiff = String(rec.difficulty || '').toLowerCase();
     if (rawDiff.includes('begin')) diff = 'Beginner';
     else if (rawDiff.includes('adv')) diff = 'Advanced';
+    else if (rawDiff.includes('inter')) diff = 'Intermediate';
 
-    let deadline = rec.deadline;
-    if (!deadline || Number.isNaN(new Date(deadline).getTime()) || new Date(deadline).getTime() <= Date.now()) {
+    let deadline = rec.deadline ?? rec.deadlineISO ?? rec.deadline_iso;
+    if (typeof deadline !== 'string' || Number.isNaN(new Date(deadline).getTime()) || new Date(deadline).getTime() <= Date.now()) {
       deadline = new Date(Date.now() + Math.max(duration * 60 * 1000, 4 * 60 * 60 * 1000)).toISOString();
     }
 
@@ -110,7 +110,7 @@ async function generateWeaknessRecommendations(req, res) {
   };
 
   let validLiveRecs = null;
-  if (Array.isArray(recommendations)) {
+  if (Array.isArray(recommendations) && recommendations.length >= 3 && recommendations.length <= 5) {
     const parsed = recommendations.map(normalizeRec);
     if (parsed.every(r => r !== null) && parsed.length > 0) {
       validLiveRecs = parsed;
@@ -122,6 +122,13 @@ async function generateWeaknessRecommendations(req, res) {
     usedFallback = false;
   } else {
     usedFallback = true;
+    fallbackReason ||= result?.success ? 'OUTPUT_SCHEMA_VALIDATION_FAILED' : 'OLLAMA_PROVIDER_ERROR';
+    if (process.env.NODE_ENV !== 'production') {
+      const shape = Array.isArray(recommendations)
+        ? { type: 'array', length: recommendations.length, firstItemKeys: recommendations[0] && typeof recommendations[0] === 'object' ? Object.keys(recommendations[0]).slice(0, 20) : [] }
+        : { type: recommendations === null ? 'null' : typeof recommendations, keys: recommendations && typeof recommendations === 'object' ? Object.keys(recommendations).slice(0, 20) : [] };
+      console.warn(`[HunterOS validation] feature=weakness-scan result=fallback reason=${fallbackReason} shape=${JSON.stringify(shape)}`);
+    }
     // Simple deterministic fallback – generate generic quests using supplied data
     const base = safeGoals[0] || 'Goal';
     const cat = safePreferredCategories[0] || 'General';
@@ -163,6 +170,8 @@ async function generateWeaknessRecommendations(req, res) {
   return res.json({
     success: true,
     fallback: usedFallback,
+    source: usedFallback ? 'hunteros-engine' : 'ollama-local',
+    ...(usedFallback ? { fallbackReason } : {}),
     recommendations,
     data: recommendations,
   });

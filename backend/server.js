@@ -1,13 +1,12 @@
 const express = require("express");
 const cors = require("cors");
-const mongoose = require("mongoose");
 require("dotenv").config();
 
-const connectDB = require("./config/db");
+const { createCorsOptions } = require("./config/cors");
+const { getHealthState } = require("./config/health");
+const aiProvider = require('./services/aiProvider');
 
-const userRoutes = require("./routes/userRoutes");
 const questRoutes = require("./routes/questRoutes");
-const completedQuestRoutes = require("./routes/completedQuestRoutes");
 const aiRoutes = require('./routes/aiRoutes');
 const weaknessRoutes = require('./routes/weaknessRecommendationRoutes');
 const recommendationRoutes = require("./routes/recommendationRoutes");
@@ -16,10 +15,17 @@ const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 
-app.use(cors());
+app.use(cors(createCorsOptions()));
 app.use(express.json());
 
-connectDB();
+// Temporary local-development trace for verifying whether the app reaches Express.
+// Log only method and path; never log query strings, headers, or request bodies.
+if (process.env.NODE_ENV !== "production") {
+    app.use("/api", (req, _res, next) => {
+        console.info(`[HunterOS dev request] ${req.method} ${req.path}`);
+        next();
+    });
+}
 
 app.get("/", (req, res) => {
     res.json({
@@ -30,29 +36,30 @@ app.get("/", (req, res) => {
         cloudProvider: "AWS App Runner Ready",
         endpoints: {
             health: "/api/health",
-            quests: "/api/quests",
             generateQuests: "/api/quests/generate",
-            users: "/api/users",
-            completedQuests: "/api/completedquests",
+            recommendations: "/api/recommendations/generate",
+            nutrition: "/api/nutrition",
+            weakness: "/api/weakness",
+            ai: "/api/ai/generate",
+            chat: "/api/chat",
         },
     });
 });
 
-app.get("/api/health", (req, res) => {
-    const isDbConnected = mongoose.connection.readyState === 1;
+app.get("/api/health", async (req, res) => {
+    const healthState = getHealthState();
+    const aiHealth = await aiProvider.checkAvailability();
     res.json({
-        status: "healthy",
+        ...healthState,
+        backendStatus: 'available',
+        aiProvider: aiHealth,
         uptimeSeconds: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
         cloudService: "AWS App Runner / CloudWatch Monitored",
-        database: isDbConnected ? "connected" : "local-first-gateway",
-        aiProvider: process.env.GEMINI_API_KEY ? "Gemini LLM Connected" : "Intelligent Fallback Engine Active",
     });
 });
 
-app.use("/api/users", userRoutes);
 app.use("/api/quests", questRoutes);
-app.use("/api/completedquests", completedQuestRoutes);
 app.use("/api/recommendations", recommendationRoutes);
 app.use("/api/nutrition", nutritionRoutes);
 app.use("/api/weakness", weaknessRoutes);

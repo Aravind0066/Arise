@@ -123,11 +123,34 @@ function retintStyleValue(
       if (/error|danger|failed/.test(styleLabel)) return theme.error;
       if (/warning|fallback/.test(styleLabel)) return theme.warning;
     }
-    if (property === 'color' && /btn|button|action|send|submit|confirm|start/.test(styleLabel) && /^#0[0-9a-f]{5,7}$/i.test(normalized)) {
+    const token = COLOR_TOKEN_BY_LEGACY_HEX[normalized];
+    if (
+      property === 'color' &&
+      token === 'textPrimary' &&
+      /primary|submit|confirm|send|start|finish/.test(styleLabel)
+    ) {
       return theme.buttonText;
     }
-    const token = COLOR_TOKEN_BY_LEGACY_HEX[normalized];
-    if (token) return theme[token];
+    if (property === 'color' && /btn|button|action|send|submit|confirm|start/.test(styleLabel) && /^#[\da-f]{6}$/i.test(normalized)) {
+      const red = parseInt(normalized.slice(1, 3), 16);
+      const green = parseInt(normalized.slice(3, 5), 16);
+      const blue = parseInt(normalized.slice(5, 7), 16);
+      const brightness = (red * 299 + green * 587 + blue * 114) / 1000;
+      if (brightness < 80) return theme.buttonText;
+    }
+    if (token) {
+      const normalizedProperty = property.toLowerCase();
+      if (normalizedProperty === 'backgroundcolor') {
+        if (token === 'textPrimary') return theme.surface;
+        if (token === 'textSecondary') return theme.surfaceAlt;
+      }
+      if (normalizedProperty === 'color' || normalizedProperty.includes('placeholder')) {
+        if (token === 'background' || token === 'surface' || token === 'surfaceAlt' || token === 'inputBackground' || token === 'inputBorder' || token === 'border') {
+          return theme.textSecondary;
+        }
+      }
+      return theme[token];
+    }
 
     const rgba = normalized.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/);
     if (rgba) {
@@ -183,6 +206,9 @@ function retintStyleValue(
           if (hue < 265) return theme.accent;
           return theme.purple;
         }
+      }
+      if (property === 'color' || property.toLowerCase().includes('placeholder')) {
+        return theme.textSecondary;
       }
     }
     return value;

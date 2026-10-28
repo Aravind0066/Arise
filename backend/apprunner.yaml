@@ -7,5 +7,8 @@ build:
 run:
   runtime-version: 22
   command: node server.js
+  env:
+    - name: NODE_ENV
+      value: production
   network:
     port: 5000
