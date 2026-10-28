@@ -142,7 +142,7 @@ export default function NutritionContent({ embedded = false }: { embedded?: bool
           <View style={themedStyles.overviewCard}>
             <Text style={themedStyles.overviewTitle}>FUEL THE HUNTER</Text>
             <Text style={themedStyles.overviewBody}>
-              HunterOS generates personalised meal guidance based on your registered fitness goal and available preparation time.
+              HunterOS uses your saved profile and any optional meal details you provide. Leave fields blank for general meal ideas.
               Results are general dietary suggestions — not medical advice.
             </Text>
             {profile?.primaryGoal ? (

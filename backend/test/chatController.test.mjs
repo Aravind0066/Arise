@@ -130,6 +130,41 @@ test('Chat: retries once when the first reply is invalid, then returns a clean a
   aiProvider.generateResponse = original;
 });
 
+test('Chat: retries one thinking-budget exhaustion with a larger output budget', async () => {
+  const original = aiProvider.generateResponse;
+  const optionsSeen = [];
+  aiProvider.generateResponse = async (_prompt, options) => {
+    optionsSeen.push(options);
+    return optionsSeen.length === 1
+      ? { success: false, errorType: 'INVALID_PROVIDER_RESPONSE', retryable: true, error: 'reasoning budget exhausted' }
+      : { success: true, data: 'Hello, Hunter.' };
+  };
+  const res = mockRes();
+  await chat({ body: { message: 'Hi' } }, res);
+  assert.equal(optionsSeen.length, 2);
+  assert.equal(optionsSeen[0].generationOptions.num_predict, 1536);
+  assert.equal(optionsSeen[1].generationOptions.num_predict, 3072);
+  assert.equal(optionsSeen[1].timeout, 60000);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.reply, 'Hello, Hunter.');
+  aiProvider.generateResponse = original;
+});
+
+test('Chat: does not retry generic malformed provider output or expose it', async () => {
+  const original = aiProvider.generateResponse;
+  let calls = 0;
+  aiProvider.generateResponse = async () => {
+    calls += 1;
+    return { success: false, errorType: 'INVALID_PROVIDER_RESPONSE', retryable: false, error: 'malformed' };
+  };
+  const res = mockRes();
+  await chat({ body: { message: 'Hi' } }, res);
+  assert.equal(calls, 1);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.reply, undefined);
+  aiProvider.generateResponse = original;
+});
+
 // 5. Message too long → 400
 test('Chat: message exceeding 2000 chars returns 400', async () => {
   const req = { body: { message: 'x'.repeat(2001) } };

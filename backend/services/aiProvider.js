@@ -151,6 +151,7 @@ async function generateResponse(prompt, options = {}) {
           ? 'Hunter AI used its reasoning budget before producing a user-facing answer. Retry the message.'
           : 'Ollama returned a malformed or empty response.',
         errorType: 'INVALID_PROVIDER_RESPONSE',
+        retryable: Boolean(thinkingOnly),
       };
     }
     try {

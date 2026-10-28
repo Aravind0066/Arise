@@ -47,26 +47,36 @@ async function chat(req, res) {
     return safeReply ? [{ role: 'assistant', content: safeReply }] : [];
   });
 
-  const requestReply = () => aiProvider.generateResponse(message, {
+  const requestReply = (retry = false) => aiProvider.generateResponse(message, {
     responseMode: 'text',
     feature: 'chat',
     system,
     historyMessages,
-    generationOptions: { num_predict: 1536 },
+    generationOptions: { num_predict: retry ? 3072 : 1536 },
+    ...(retry ? { timeout: 60000 } : {}),
   });
 
   let result;
+  let retryUsed = false;
   try {
     result = await requestReply();
   } catch {
     return res.status(502).json({ success: false, error: 'Hunter AI could not complete this reply. Retry the message.', errorType: 'OLLAMA_PROVIDER_ERROR' });
+  }
+  if (!result.success && result.errorType === 'INVALID_PROVIDER_RESPONSE' && result.retryable === true) {
+    retryUsed = true;
+    try {
+      result = await requestReply(true);
+    } catch {
+      return res.status(502).json({ success: false, error: 'Hunter AI could not complete this reply. Retry the message.', errorType: 'OLLAMA_PROVIDER_ERROR' });
+    }
   }
   if (!result.success) {
     const errorType = result.errorType || 'OLLAMA_PROVIDER_ERROR';
     return res.status(aiProvider.responseStatusFor(errorType)).json({ success: false, error: result.error, errorType });
   }
   let reply = normalizeChatReply(result.data);
-  if (!reply) {
+  if (!reply && !retryUsed) {
     try {
       result = await requestReply();
     } catch {

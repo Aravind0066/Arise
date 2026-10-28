@@ -150,6 +150,42 @@ describe('API wrapper', () => {
     );
   });
 
+  test('malformed JSON diagnostics do not expose API URL credentials, query values, or body contents', async () => {
+    const previous = process.env.EXPO_PUBLIC_API_URL;
+    process.env.EXPO_PUBLIC_API_URL = 'https://user:secret@example.test/api?token=private';
+    global.fetch = () => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve('{"sensitive":"private response content"'),
+    });
+    try {
+      await assert.rejects(chatWithAI({ message: 'Hello' }), (error) => {
+        assert.match(error.message, /invalid or malformed JSON/);
+        assert.match(error.message, /https:\/\/example\.test\/api\/chat/);
+        assert.doesNotMatch(error.message, /secret|token=private|sensitive|private response/);
+        return true;
+      });
+    } finally {
+      if (previous === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+      else process.env.EXPO_PUBLIC_API_URL = previous;
+    }
+  });
+
+  test('non-JSON HTTP errors do not expose raw server or proxy response bodies', async () => {
+    global.fetch = () => Promise.resolve({
+      ok: false,
+      status: 502,
+      headers: { get: () => 'text/html' },
+      text: () => Promise.resolve('<html>stack trace with private token</html>'),
+    });
+    await assert.rejects(chatWithAI({ message: 'Hello' }), (error) => {
+      assert.match(error.message, /HTTP 502 with a non-JSON response/);
+      assert.doesNotMatch(error.message, /stack trace|private token/);
+      return true;
+    });
+  });
+
   test('reports an unreachable backend without exposing a JSON parse error', async () => {
     global.fetch = () => Promise.reject(new TypeError('fetch failed'));
 

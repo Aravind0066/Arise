@@ -122,6 +122,10 @@ test('Ollama provider reports unavailable service, missing model, malformed body
     const thinkingOnly = await provider.generateResponse('hello', { responseMode: 'text' });
     assert.match(thinkingOnly.error, /reasoning budget/);
     assert.equal(thinkingOnly.errorType, 'INVALID_PROVIDER_RESPONSE');
+    assert.equal(thinkingOnly.retryable, true);
+    global.fetch = async () => ({ ok: true, json: async () => ({ message: { content: '' } }) });
+    const malformedEmpty = await provider.generateResponse('hello', { responseMode: 'text' });
+    assert.equal(malformedEmpty.retryable, false);
     global.fetch = (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
       const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
     }, { once: true }));

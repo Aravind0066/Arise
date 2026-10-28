@@ -141,9 +141,7 @@ async function requestWithTimeout<T>(path: string, options?: RequestInit, timeou
         throw new Error(`Endpoint /${cleanPath} not found on server (HTTP 404). Check backend route configuration.`);
       }
       if (!response.ok) {
-        throw new Error(
-          `Server returned HTTP ${response.status} with non-JSON response: ${rawText.slice(0, 100).trim() || 'No details'}`
-        );
+        throw new Error(`Server returned HTTP ${response.status} with a non-JSON response.`);
       }
       throw new Error(
         'Server returned HTML/text instead of JSON. Ensure the HunterOS backend is running and the app is configured with the correct backend address.'
@@ -155,7 +153,7 @@ async function requestWithTimeout<T>(path: string, options?: RequestInit, timeou
       payload = rawText ? JSON.parse(rawText) : {};
     } catch {
       throw new Error(
-        `Server returned invalid or malformed JSON from ${fullUrl}. Body starts with: ${rawText.slice(0, 60).trim() || '(empty)'}`
+        `Server returned invalid or malformed JSON from ${getSafeApiBaseUrlForDiagnostics()}/${cleanPath}.`
       );
     }
 
