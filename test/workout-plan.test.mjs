@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildWorkoutPrompt,
+  getWorkoutMovementChoices,
   getLocalWorkoutDate,
   isProfileRestDay,
   normalizeGeneratedWorkout,
@@ -87,9 +88,65 @@ test('normalizes clear workout field variations while retaining all required exe
   assert.equal(routine.exercises[2].durationSeconds, 25);
 });
 
+test('repairs a contradictory exercise type when exactly one quantity is present', () => {
+  const contradictory = {
+    ...validPlan,
+    exercises: validPlan.exercises.map((exercise) => ({ ...exercise })),
+  };
+  contradictory.exercises[2] = {
+    ...contradictory.exercises[2],
+    type: 'reps',
+    targetReps: null,
+    durationSeconds: 25,
+  };
+  const routine = normalizeGeneratedWorkout(contradictory, baseRoutine, '2026-10-27');
+  assert.ok(routine);
+  assert.equal(routine.exercises[2].type, 'timed');
+  assert.equal(routine.exercises[2].durationSeconds, 25);
+  assert.equal(routine.exercises[2].targetReps, undefined);
+});
+
+test('accepts low but valid rep counts supported by the workout controls', () => {
+  const lowRepPlan = {
+    ...validPlan,
+    exercises: validPlan.exercises.map((exercise) => ({ ...exercise })),
+  };
+  lowRepPlan.exercises[2] = { ...lowRepPlan.exercises[2], targetReps: 3 };
+  assert.ok(normalizeGeneratedWorkout(lowRepPlan, baseRoutine, '2026-10-27'));
+});
+
 test('workout prompt does not invent missing profile details or equipment', () => {
   const prompt = buildWorkoutPrompt(null, { strength: 35, health: 45, discipline: 30, knowledge: 40, mindfulness: 35 });
   assert.match(prompt, /No saved onboarding details are available/);
   assert.match(prompt, /Available equipment was not recorded/);
   assert.doesNotMatch(prompt, /Height:|Weight:|Age:/);
+});
+
+test('home and gym workout modes produce the requested equipment constraints', () => {
+  const stats = { strength: 35, health: 45, discipline: 30, knowledge: 40, mindfulness: 35 };
+  const homePrompt = buildWorkoutPrompt(null, stats, undefined, { mode: 'home', equipment: [] });
+  const gymPrompt = buildWorkoutPrompt(null, stats, undefined, { mode: 'gym', equipment: ['barbell', 'bench'] });
+  const generalGymPrompt = buildWorkoutPrompt(null, stats, undefined, { mode: 'gym', equipment: [] });
+  assert.match(homePrompt, /This is Home mode: use bodyweight movements only and no equipment/);
+  assert.match(gymPrompt, /Gym mode\. Build an equipment-based workout/);
+  assert.match(gymPrompt, /Bench Press/);
+  assert.match(gymPrompt, /Barbell Squat/);
+  assert.match(generalGymPrompt, /Bench Press/);
+  assert.doesNotMatch(homePrompt, /Bench Press|Leg Press|Cable Crossover/);
+  assert.deepEqual(getWorkoutMovementChoices({ mode: 'gym', equipment: ['bench press', 'leg press', 'cable crossover'] }).filter((name) => ['Bench Press', 'Leg Press', 'Cable Crossover'].includes(name)), ['Bench Press', 'Leg Press', 'Cable Crossover']);
+});
+
+test('normalizes supported gym movements for the guided workout UI', () => {
+  const gymPlan = {
+    ...validPlan,
+    exercises: [
+      { name: 'Bench Press', type: 'reps', targetReps: 8, durationSeconds: null, restSeconds: 60, targetMuscles: ['Chest', 'Triceps'], tips: 'Keep your shoulders steady.' },
+      { name: 'Leg Press', type: 'reps', targetReps: 10, durationSeconds: null, restSeconds: 60, targetMuscles: ['Quadriceps'], tips: 'Keep your knees aligned.' },
+      { name: 'Cable Crossover', type: 'reps', targetReps: 12, durationSeconds: null, restSeconds: 45, targetMuscles: ['Chest'], tips: 'Control the cable return.' },
+    ],
+  };
+  const routine = normalizeGeneratedWorkout(gymPlan, baseRoutine, '2026-10-27');
+  assert.ok(routine);
+  assert.deepEqual(routine.exercises.map((exercise) => exercise.name), ['Bench Press', 'Leg Press', 'Cable Crossover']);
+  assert.ok(routine.exercises.every((exercise) => exercise.illustrationKey === 'gym_equipment'));
 });

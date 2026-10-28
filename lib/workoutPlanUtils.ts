@@ -1,6 +1,33 @@
 import type { HunterProfile, HunterStats, WorkoutRoutine } from './hunterTypes.ts';
 
 const VALID_DIFFICULTIES = ['Beginner', 'Intermediate', 'Advanced'] as const;
+const HOME_MOVEMENTS = ['Push-ups', 'Squats', 'Plank', 'Jumping Jacks', 'Lunges', 'Mountain Climbers', 'Burpees', 'Crunches'] as const;
+const GYM_MOVEMENTS = [
+  { name: 'Bench Press', equipment: ['bench press', 'bench', 'barbell'] },
+  { name: 'Dumbbell Bench Press', equipment: ['dumbbell', 'dumbbells'] },
+  { name: 'Leg Press', equipment: ['leg press', 'machine'] },
+  { name: 'Cable Crossover', equipment: ['cable crossover', 'cable', 'cables'] },
+  { name: 'Lat Pulldown', equipment: ['lat pulldown', 'cable', 'cables', 'machine'] },
+  { name: 'Seated Cable Row', equipment: ['cable row', 'cable', 'cables', 'machine'] },
+  { name: 'Dumbbell Shoulder Press', equipment: ['dumbbell', 'dumbbells'] },
+  { name: 'Biceps Curl', equipment: ['dumbbell', 'dumbbells', 'barbell', 'cable'] },
+  { name: 'Triceps Pushdown', equipment: ['cable', 'cables', 'machine'] },
+  { name: 'Barbell Squat', equipment: ['barbell', 'squat rack'] },
+  { name: 'Goblet Squat', equipment: ['dumbbell', 'dumbbells', 'kettlebell'] },
+  { name: 'Leg Extension', equipment: ['leg extension', 'machine'] },
+  { name: 'Hamstring Curl', equipment: ['hamstring curl', 'machine'] },
+  { name: 'Dumbbell Romanian Deadlift', equipment: ['dumbbell', 'dumbbells'] },
+] as const;
+
+export function getWorkoutMovementChoices(environment?: { mode: string; equipment: string[] }): string[] {
+  if (!environment || environment.mode === 'home') return [...HOME_MOVEMENTS];
+  const supplied = environment.equipment.map((item) => item.trim().toLowerCase()).filter(Boolean);
+  const equipmentMovements = supplied.length
+    ? GYM_MOVEMENTS.filter((movement) => movement.equipment.some((alias) => supplied.some((item) => item.includes(alias))))
+    : GYM_MOVEMENTS;
+  return [...HOME_MOVEMENTS, ...equipmentMovements.map(({ name }) => name)];
+}
+
 export type WorkoutPlanAdjustment = {
   durationMinutes: number;
   difficulty: (typeof VALID_DIFFICULTIES)[number];
@@ -34,6 +61,7 @@ function safeInteger(value: unknown): number | null {
 
 function movementKey(name: string): WorkoutRoutine['exercises'][number]['illustrationKey'] | null {
   const value = name.toLocaleLowerCase().replace(/[-_]/g, ' ');
+  if (/bench press|leg press|cable crossover|lat pulldown|cable row|shoulder press|biceps? curl|triceps? pushdown|barbell squat|goblet squat|leg extension|hamstring curl|romanian deadlift/.test(value)) return 'gym_equipment';
   if (/push.?ups?/.test(value)) return 'pushup';
   if (/squats?/.test(value)) return 'squat';
   if (/planks?/.test(value)) return 'plank';
@@ -83,11 +111,16 @@ export function normalizeGeneratedWorkout(
     const repsValue = safeInteger(item.targetReps ?? item.target_reps ?? item.reps);
     const durationValue = safeInteger(item.durationSeconds ?? item.duration_seconds ?? item.seconds ?? (typeof item.duration === 'number' || typeof item.duration === 'string' ? item.duration : undefined));
     const requestedType = typeof item.type === 'string' ? item.type.toLowerCase() : '';
-    const type = ['rep', 'reps', 'repetition', 'repetitions'].includes(requestedType)
+    const quantityInferredType = repsValue !== null && durationValue === null
+      ? 'reps'
+      : durationValue !== null && repsValue === null
+        ? 'timed'
+        : '';
+    const type = quantityInferredType || (['rep', 'reps', 'repetition', 'repetitions'].includes(requestedType)
       ? 'reps'
       : ['timed', 'time', 'duration', 'hold'].includes(requestedType)
         ? 'timed'
-        : repsValue !== null && durationValue === null ? 'reps' : durationValue !== null && repsValue === null ? 'timed' : '';
+        : '');
     const restSeconds = safeInteger(item.restSeconds ?? item.rest_seconds ?? item.restPeriodSeconds ?? item.rest);
     const key = name ? movementKey(name) : null;
     if (!name || !tips || !key || restSeconds === null || restSeconds < 0 || restSeconds > 90) return null;
@@ -98,7 +131,7 @@ export function normalizeGeneratedWorkout(
     if (targetMuscles.some((muscle: string | null) => !muscle)) return null;
 
     if (type === 'reps') {
-      if (repsValue === null || repsValue < 4 || repsValue > 40) return null;
+      if (repsValue === null || repsValue < 1 || repsValue > 40) return null;
       exercises.push({
         id: `daily-${localDate}-${index + 1}`,
         name,
@@ -173,19 +206,33 @@ export function buildWorkoutPrompt(
   }
   if (environment) {
     profileDetails.push(`Selected workout mode: ${environment.mode}`);
-    profileDetails.push(`Available equipment supplied for this request: ${environment.equipment.length ? environment.equipment.join(', ') : 'none recorded'}`);
+    profileDetails.push(`Available equipment supplied for this request: ${environment.equipment.length ? environment.equipment.join(', ') : environment.mode === 'gym' ? 'not specified; common gym equipment may be used' : 'none; home workout is bodyweight-only'}`);
   }
+
+  const movementChoices = getWorkoutMovementChoices(environment);
+  const gymMovementChoices = movementChoices.filter((name) => !(HOME_MOVEMENTS as readonly string[]).includes(name));
+  const modeInstruction = !environment
+    ? 'Available equipment was not recorded; use bodyweight movements only.'
+    : environment.mode === 'gym'
+    ? gymMovementChoices.length
+      ? `This is Gym mode. Build an equipment-based workout: use at least 3 movements from this equipment-matched list in a 5–8 exercise plan: ${gymMovementChoices.join(', ')}. Bodyweight exercises can fill the remaining slots. Use only supplied equipment${environment.equipment.length ? ` (${environment.equipment.join(', ')})` : ' or common gym equipment'}.`
+      : `This is Gym mode, but no supplied equipment matched a supported gym exercise (${environment.equipment.join(', ')}). Use bodyweight movements and do not invent equipment.`
+    : 'This is Home mode: use bodyweight movements only and no equipment.';
 
   return [
     `Create one safe, practical workout for today using the profile details below only when provided${adjustment ? `, targeting ${adjustment.targetFocus}` : ''}.`,
     'Treat BMI as optional context, never as the sole factor for exercise selection. Scale for the stated fitness level and include sensible rests.',
     'Do not prescribe medical treatment or extreme exertion. Use the selected equipment only when it is available, and keep movements within the supported exercise list.',
     'Return only a JSON object with title, goal, durationMinutes, and exercises.',
-    'Each exercise must contain name (choose only push-ups, squats, plank, jumping jacks, lunges, mountain climbers, burpees, or crunches), type (reps or timed), targetReps and durationSeconds (put a JSON null in the unused quantity), restSeconds, targetMuscles (1-4 short strings), and tips.',
-    'Use 3-8 exercises, workout duration 8-75 minutes, reps 4-40, timed duration 15-120 seconds, rest 0-90 seconds. Do not include XP, rewards, stats, quests, or profile mutations.',
+    `Each exercise name must be selected from this mode- and equipment-matched list: ${movementChoices.join(', ')}.`,
+    'Each exercise must contain type (reps or timed), targetReps and durationSeconds (put a JSON null in the unused quantity; reps requires an integer targetReps from 1 to 40 and null durationSeconds, while timed requires null targetReps and an integer durationSeconds from 15 to 120), restSeconds from 0 to 90, targetMuscles (1-4 short strings), and concise tips.',
+    'Use 3-8 exercises and workout duration 8-75 minutes. Do not include XP, rewards, stats, quests, or profile mutations.',
     'Available profile context:',
-    profileDetails.length ? profileDetails.join('\n') : 'No saved onboarding details are available; make a conservative beginner bodyweight plan.',
+    profileDetails.length ? profileDetails.join('\n') : environment?.mode === 'gym'
+      ? 'No saved onboarding details are available; make a conservative beginner gym plan using common equipment and bodyweight.'
+      : 'No saved onboarding details are available; make a conservative beginner bodyweight plan.',
     `Current Hunter stats: strength ${stats.strength}, health ${stats.health}, discipline ${stats.discipline}`,
-    adjustment && environment ? `Match requested duration and difficulty. Selected mode: ${environment.mode}. Actual available equipment: ${environment.equipment.length ? environment.equipment.join(', ') : 'none recorded'}. Use only actual listed equipment; if none was listed, use bodyweight options.` : adjustment ? `Use ${adjustment.equipment} as the available equipment. Match the requested duration and difficulty.` : environment ? `Honor selected ${environment.mode} mode and use only listed equipment. If no equipment was listed, use bodyweight options.` : 'Available equipment was not recorded; use bodyweight exercises only.',
+    modeInstruction,
+    adjustment ? `Match requested duration (${adjustment.durationMinutes} minutes), difficulty (${adjustment.difficulty}), and target focus (${adjustment.targetFocus}).` : '',
   ].join('\n');
 }

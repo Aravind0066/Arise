@@ -26,7 +26,7 @@ export default function WorkoutHistoryScreen() {
     return () => { active = false; };
   }, []);
   const modeLabels: Record<string, string> = {
-    home: 'Home Workout', gym: 'Gym Workout', bodyweight: 'Bodyweight Only', custom: 'Custom Equipment',
+    home: 'Home Workout', gym: 'Gym Workout', bodyweight: 'Home Workout', custom: 'Gym Workout',
   };
   const modeLabel = (mode?: SavedDailyWorkoutPlan['mode']) => mode ? modeLabels[mode] || 'Mode not recorded' : 'Mode not recorded';
   return <View style={styles.root}><SafeAreaView style={styles.safe} edges={['top']}>

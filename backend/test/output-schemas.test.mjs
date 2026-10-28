@@ -7,6 +7,7 @@ const {
   extractJsonArray,
   weaknessRecommendationsSchema,
   generatedQuestsSchema,
+  workoutSchema,
 } = require('../utils/outputSchemas');
 
 test('extractJsonArray keeps raw arrays and unwraps the preferred object keys', () => {
@@ -30,4 +31,20 @@ test('quest schemas require wrapped arrays with the live item counts', () => {
   assert.equal(generatedQuestsSchema.type, 'object');
   assert.equal(generatedQuestsSchema.properties.quests.minItems, 3);
   assert.equal(generatedQuestsSchema.properties.quests.maxItems, 3);
+});
+
+test('workout schema constrains fields to the ranges enforced by the frontend normalizer', () => {
+  const exercise = workoutSchema.properties.exercises.items;
+  assert.equal(workoutSchema.properties.durationMinutes.minimum, 8);
+  assert.equal(workoutSchema.properties.durationMinutes.maximum, 75);
+  assert.equal(exercise.properties.targetReps.minimum, 1);
+  assert.equal(exercise.properties.targetReps.maximum, 40);
+  assert.equal(exercise.properties.durationSeconds.minimum, 15);
+  assert.equal(exercise.properties.durationSeconds.maximum, 120);
+  assert.equal(exercise.properties.restSeconds.minimum, 0);
+  assert.equal(exercise.properties.restSeconds.maximum, 90);
+  assert.equal(exercise.properties.targetMuscles.maxItems, 4);
+  for (const name of ['Bench Press', 'Leg Press', 'Cable Crossover', 'Lat Pulldown', 'Dumbbell Shoulder Press']) {
+    assert.ok(exercise.properties.name.enum.includes(name), `${name} must be allowed for Gym mode`);
+  }
 });

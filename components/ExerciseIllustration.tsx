@@ -199,6 +199,21 @@ export function ExerciseIllustration({
           </G>
         )}
 
+        {type === 'gym_equipment' && (
+          <G>
+            {/* Generic equipment station for machine and free-weight movements. */}
+            <Line x1="48" y1="42" x2="152" y2="42" stroke={primaryColor} strokeWidth="6" strokeLinecap="round" />
+            <Line x1="62" y1="44" x2="62" y2="160" stroke={secondaryColor} strokeWidth="6" strokeLinecap="round" />
+            <Line x1="138" y1="44" x2="138" y2="160" stroke={secondaryColor} strokeWidth="6" strokeLinecap="round" />
+            <Line x1="62" y1="158" x2="138" y2="158" stroke={primaryColor} strokeWidth="5" strokeLinecap="round" />
+            <Rect x="75" y="68" width="50" height="52" rx="4" fill={theme.surfaceAlt} stroke={theme.accent} strokeWidth="2" />
+            <Line x1="100" y1="42" x2="100" y2="66" stroke={theme.error} strokeWidth="3" />
+            <Line x1="87" y1="123" x2="113" y2="123" stroke={primaryColor} strokeWidth="5" strokeLinecap="round" />
+            <Circle cx="87" cy="123" r="5" fill={theme.purple} />
+            <Circle cx="113" cy="123" r="5" fill={theme.purple} />
+          </G>
+        )}
+
         {type === 'rest' && (
           <G>
             {/* Rest & Recovery Pulsing Core */}

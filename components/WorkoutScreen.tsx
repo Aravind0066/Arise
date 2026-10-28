@@ -26,6 +26,7 @@ import {
 import { Exercise, HunterProfile, HunterStats, WorkoutLog, WorkoutRoutine, WorkoutMode } from '../lib/hunterTypes';
 import { getPersonalizedWorkout } from '../lib/workoutEngine';
 import { generateAdjustedWorkoutPlan, getOrCreateDailyWorkoutPlan } from '../lib/dailyWorkout';
+import { equipmentLabelForWorkoutMode } from '../lib/workoutGenerationContext';
 import { getLocalWorkoutDate, type WorkoutPlanAdjustment } from '../lib/workoutPlanUtils';
 import { getWorkoutActivity } from '../lib/workoutActivity';
 import { useInternetConnectivity } from '../lib/ConnectivityContext';
@@ -37,7 +38,6 @@ type WorkoutPhase = 'landing' | 'preparation' | 'active' | 'rest' | 'completed';
 const adjustmentOptions: { key: keyof WorkoutPlanAdjustment; values: string[] }[] = [
   { key: 'difficulty', values: ['Beginner', 'Intermediate', 'Advanced'] },
   { key: 'targetFocus', values: ['Full Body', 'Upper Body', 'Lower Body', 'Core', 'Conditioning'] },
-  { key: 'equipment', values: ['None (Bodyweight)', 'Dumbbells / Basic', 'Full Gym'] },
 ];
 
 function WorkoutFlowScroller({
@@ -137,7 +137,7 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
     statRaised: string;
     statBonus: number;
   } | null>(null);
-  const [workoutMode, setWorkoutMode] = useState<WorkoutMode>('bodyweight');
+  const [workoutMode, setWorkoutMode] = useState<WorkoutMode>('home');
   const [equipmentDraft, setEquipmentDraft] = useState('');
 
   // Load saved profile and completion history; generating a plan is an explicit action.
@@ -191,7 +191,7 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
     if (!routine) setPlanNotice('');
     try {
       const equipment = equipmentDraft.split(',').map((item) => item.trim()).filter(Boolean);
-      const preferences = { mode: workoutMode, equipment: workoutMode === 'bodyweight' ? [] : equipment };
+      const preferences = { mode: workoutMode, equipment: workoutMode === 'home' ? [] : equipment };
       await saveWorkoutPreferences(preferences);
       const dailyPlan = await getOrCreateDailyWorkoutPlan(
         profile,
@@ -237,10 +237,14 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
     setAdjustError('');
     try {
       const durationMinutes = Math.max(8, Math.min(75, Number.parseInt(durationDraft, 10) || adjustment.durationMinutes));
-      const requestedAdjustment = { ...adjustment, durationMinutes };
+      const selectedEquipment = workoutMode === 'home' ? [] : equipmentDraft.split(',').map((item) => item.trim()).filter(Boolean);
+      const requestedAdjustment = {
+        ...adjustment,
+        durationMinutes,
+        equipment: equipmentLabelForWorkoutMode({ mode: workoutMode, equipment: selectedEquipment }),
+      };
       setAdjustment(requestedAdjustment);
       setDurationDraft(String(durationMinutes));
-      const selectedEquipment = workoutMode === 'bodyweight' ? [] : equipmentDraft.split(',').map((item) => item.trim()).filter(Boolean);
       await saveWorkoutPreferences({ mode: workoutMode, equipment: selectedEquipment });
       const generated = await generateAdjustedWorkoutPlan(profile, stats, requestedAdjustment, new Date(), controller.signal);
       const revisedRoutine = { ...generated.routine, id: `daily-ai-${getLocalWorkoutDate()}-${Date.now()}` };
@@ -547,9 +551,9 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Text style={themedStyles.landingPlanCopy}>Your plan uses saved profile details, fitness level, goals, and recovery preferences when available.</Text>
               <Text style={{ color: theme.textPrimary, fontSize: 11, fontWeight: '800', marginBottom: 6 }}>WORKOUT MODE</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 10 }}>
-                {([{ key: 'home', label: 'Home Workout' }, { key: 'gym', label: 'Gym Workout' }, { key: 'bodyweight', label: 'Bodyweight Only' }, { key: 'custom', label: 'Custom Equipment' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border, backgroundColor: workoutMode === key ? theme.surfaceAlt : 'transparent' }}><Text style={{ color: theme.textPrimary, fontSize: 11 }}>{label}</Text></Pressable>)}
+                {([{ key: 'home', label: 'Home · Bodyweight' }, { key: 'gym', label: 'Gym · Equipment + Bodyweight' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border, backgroundColor: workoutMode === key ? theme.surfaceAlt : 'transparent' }}><Text style={{ color: theme.textPrimary, fontSize: 11 }}>{label}</Text></Pressable>)}
               </View>
-              {workoutMode !== 'bodyweight' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available equipment, comma separated" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 10, marginBottom: 10 }} /> : null}
+              {workoutMode === 'gym' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available gym equipment (optional)" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 10, marginBottom: 10 }} /> : null}
               {loadError ? <Text style={themedStyles.planError}>{loadError}</Text> : null}
               {isProfileLoading ? <Text style={themedStyles.landingPlanCopy}>Loading your saved profile…</Text> : null}
               <Pressable
@@ -609,9 +613,9 @@ export default function WorkoutScreen({ embedded = false, onWorkoutCompleted }: 
               <Text style={themedStyles.landingPlanTitle}>TODAY’S PROTOCOL</Text>
               <Text style={{ color: theme.textPrimary, fontSize: 11, fontWeight: '800' }}>WORKOUT MODE · {workoutMode.toUpperCase()}</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginVertical: 8 }}>
-                {([{ key: 'home', label: 'Home Workout' }, { key: 'gym', label: 'Gym Workout' }, { key: 'bodyweight', label: 'Bodyweight Only' }, { key: 'custom', label: 'Custom Equipment' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 7, paddingHorizontal: 9, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border }}><Text style={{ color: theme.textPrimary, fontSize: 10 }}>{label}</Text></Pressable>)}
+                {([{ key: 'home', label: 'Home · Bodyweight' }, { key: 'gym', label: 'Gym · Equipment + Bodyweight' }] as const).map(({ key, label }) => <Pressable key={key} onPress={() => setWorkoutMode(key)} style={{ paddingVertical: 7, paddingHorizontal: 9, borderRadius: 8, borderWidth: 1, borderColor: workoutMode === key ? theme.accent : theme.border }}><Text style={{ color: theme.textPrimary, fontSize: 10 }}>{label}</Text></Pressable>)}
               </View>
-              {workoutMode !== 'bodyweight' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available equipment" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 9, marginBottom: 8 }} /> : null}
+              {workoutMode === 'gym' ? <TextInput value={equipmentDraft} onChangeText={setEquipmentDraft} placeholder="Available gym equipment (optional)" placeholderTextColor={theme.textSecondary} style={{ color: theme.textPrimary, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 9, marginBottom: 8 }} /> : null}
               {loadError ? <Text style={themedStyles.planError}>{loadError}</Text> : null}
               <Pressable
                 style={[themedStyles.startWorkoutBtn, isPlanLoading && themedStyles.disabledAction]}

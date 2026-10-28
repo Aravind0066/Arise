@@ -105,7 +105,7 @@ export interface NutritionHistoryRecord {
   inputs?: NutritionInput;
 }
 
-export type WorkoutMode = 'home' | 'gym' | 'bodyweight' | 'custom';
+export type WorkoutMode = 'home' | 'gym';
 export interface WorkoutPreferences { mode: WorkoutMode; equipment: string[] }
 
 export interface HunterChatMessage {
@@ -250,6 +250,7 @@ export type ExerciseIllustrationType =
   | 'pullup'
   | 'burpee'
   | 'crunch'
+  | 'gym_equipment'
   | 'rest';
 
 export interface Exercise {
